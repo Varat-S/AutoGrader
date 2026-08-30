@@ -56,3 +56,7 @@ dist/
 build/
 .next/
 .out/
+
+# Generated Media Output
+output/
+

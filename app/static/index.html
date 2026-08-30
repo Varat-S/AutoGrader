@@ -1,0 +1,249 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Multimodal Colorist Assistant</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-container">
+            <div class="logo-area">
+                <div class="logo-icon">🎨</div>
+                <div>
+                    <h1 class="logo-title">Autonomous Multimodal Colorist</h1>
+                    <p class="logo-subtitle">Research-to-Grade Autonomous Colorist for Agentic Cinema</p>
+                </div>
+            </div>
+            <div class="tech-badges">
+                <span class="badge badge-gemini">✨ Gemini 3.6 Flash</span>
+                <span class="badge badge-parallel">⚡ Parallel Web Search</span>
+                <span class="badge badge-gcp">☁️ Google Cloud</span>
+                <span class="badge badge-cv">📐 OpenCV & FFmpeg</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- TOP WORKFLOW CONTROL PANEL -->
+        <section class="panel control-panel">
+            <div class="panel-header">
+                <h2>1. Project Setup & Footage Input</h2>
+                <div class="quick-actions">
+                    <button id="btn-load-demo" class="btn btn-secondary">⚡ Load Demo Sequence (3 Shots)</button>
+                </div>
+            </div>
+
+            <div class="upload-grid">
+                <div class="dropzone" id="dropzone">
+                    <div class="dropzone-content">
+                        <div class="upload-icon">📁</div>
+                        <p class="dropzone-text"><strong>Drag & Drop 2–4 video clips (.mp4 / .mov)</strong></p>
+                        <p class="dropzone-sub">or click to browse from your device</p>
+                        <input type="file" id="file-input" multiple accept="video/mp4,video/quicktime" style="display:none">
+                    </div>
+                </div>
+
+                <div class="uploaded-clips-container">
+                    <h3 class="subheading">Uploaded Sequence Clips</h3>
+                    <div id="clips-list" class="clips-list">
+                        <div class="empty-state">No clips loaded yet. Drop files or click "Load Demo Sequence".</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grading-settings-grid">
+                <div class="form-group">
+                    <label for="color-profile-select">Source Color Profile</label>
+                    <select id="color-profile-select" class="form-control">
+                        <option value="Rec.709" selected>Standard Rec.709 (Default)</option>
+                        <option value="Sony S-Log3" disabled>Sony S-Log3 / S-Gamut3.Cine (Phase 8)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="ref-shot-select">Master Reference Shot</label>
+                    <select id="ref-shot-select" class="form-control">
+                        <option value="auto" selected>✨ Auto-detect Best Reference Shot (Gemini)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="creative-prompt-area">
+                <div class="form-group">
+                    <label for="creative-prompt">Creative Direction & Aesthetic Intent</label>
+                    <textarea id="creative-prompt" class="form-control prompt-input" rows="2" placeholder="Describe your desired film aesthetic (e.g., 'Restrained desert science-fiction look. Warm golden highlights, muted saturation, natural skin, cool slate shadows.')">Restrained desert science-fiction aesthetic. Warm golden highlights, muted saturation, natural skin, cool slate shadows.</textarea>
+                </div>
+                
+                <div class="prompt-chips">
+                    <span class="chip-label">Aesthetic Presets:</span>
+                    <button class="chip" data-prompt="Restrained desert science-fiction aesthetic. Warm golden highlights, muted saturation, natural skin, cool slate shadows.">🏜️ Dune Sci-Fi</button>
+                    <button class="chip" data-prompt="Moody neo-noir cyberpunk aesthetic with vibrant neon cyan and magenta rim lighting, deep blacks, high contrast.">🏙️ Neo-Noir Cyberpunk</button>
+                    <button class="chip" data-prompt="Lush natural golden hour lighting with warm amber tones, gentle contrast, and rich healthy skin rendering.">🌅 Golden Hour Sunset</button>
+                    <button class="chip" data-prompt="High-contrast desaturated military thriller bleach bypass look with gritty textures and cold metallic shadows.">🎬 Bleach Bypass Action</button>
+                </div>
+            </div>
+
+            <div class="action-footer">
+                <button id="btn-run" class="btn btn-primary btn-large" disabled>
+                    <span class="btn-icon">⚡</span> Research & Grade Sequence
+                </button>
+            </div>
+        </section>
+
+        <!-- LIVE AGENT PROGRESS & REASONING -->
+        <section id="agent-activity-panel" class="panel activity-panel" style="display:none;">
+            <div class="panel-header">
+                <h2>2. Autonomous Agent Activity & Reasoning</h2>
+                <span id="agent-status-badge" class="status-badge badge-running">Processing</span>
+            </div>
+
+            <div class="stepper-bar">
+                <div class="step-item" id="step-perceive">
+                    <div class="step-circle">1</div>
+                    <div class="step-label">Perceive (Gemini)</div>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item" id="step-research">
+                    <div class="step-circle">2</div>
+                    <div class="step-label">Research (Parallel)</div>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item" id="step-measure">
+                    <div class="step-circle">3</div>
+                    <div class="step-label">Measure (CIELAB)</div>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item" id="step-grade">
+                    <div class="step-circle">4</div>
+                    <div class="step-label">Grade & Preview</div>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item" id="step-evaluate">
+                    <div class="step-circle">5</div>
+                    <div class="step-label">Evaluate & Revise</div>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item" id="step-deliver">
+                    <div class="step-circle">6</div>
+                    <div class="step-label">Deliver Output</div>
+                </div>
+            </div>
+
+            <div class="progress-container">
+                <div id="progress-fill" class="progress-fill" style="width: 0%;"></div>
+            </div>
+
+            <div class="terminal-log">
+                <div class="terminal-header">Real-Time Autonomous Agent Event Log</div>
+                <div id="log-feed" class="log-feed"></div>
+            </div>
+        </section>
+
+        <!-- RESULTS DASHBOARD -->
+        <section id="results-panel" class="panel results-panel" style="display:none;">
+            <div class="panel-header">
+                <h2>3. Final Graded Results & Consistency Breakdown</h2>
+                <div class="result-actions" id="result-top-actions"></div>
+            </div>
+
+            <!-- CREATIVE SPECIFICATION CARD -->
+            <div id="creative-spec-card" class="spec-card"></div>
+
+            <!-- TABBED SHOT SELECTOR -->
+            <div class="shot-tabs-header">
+                <span class="tabs-label">Graded Target Shots:</span>
+                <div id="shot-tabs" class="shot-tabs"></div>
+            </div>
+
+            <!-- BEFORE & AFTER VIDEO COMPARISON -->
+            <div class="video-comparison-grid">
+                <div class="video-card">
+                    <div class="video-card-header">
+                        <span class="video-tag tag-before">Original Unmatched Source</span>
+                        <span id="label-source-shot">Target Shot</span>
+                    </div>
+                    <div class="video-wrapper">
+                        <video id="player-before" controls muted playsinline></video>
+                    </div>
+                </div>
+
+                <div class="video-card">
+                    <div class="video-card-header">
+                        <span class="video-tag tag-after">✨ Autonomous Graded Result</span>
+                        <span id="label-graded-shot">Matched & Styled</span>
+                    </div>
+                    <div class="video-wrapper">
+                        <video id="player-after" controls playsinline></video>
+                    </div>
+                </div>
+            </div>
+
+            <!-- QUANTITATIVE CONSISTENCY METRICS -->
+            <div class="metrics-dashboard">
+                <div class="metric-card score-card">
+                    <div class="metric-label">Shot Color Consistency</div>
+                    <div class="score-progression">
+                        <span id="score-before" class="score-val score-low">--</span>
+                        <span class="score-arrow">➔</span>
+                        <span id="score-after" class="score-val score-high">--</span>
+                        <span class="score-unit">/ 100</span>
+                    </div>
+                    <div id="score-delta" class="score-subtext">Improved alignment</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">Luminance Alignment</div>
+                    <div id="metric-lum" class="metric-val">--</div>
+                    <div class="metric-subtext">Rec.709 perceptual Y matching</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">Color Distribution Similarity</div>
+                    <div id="metric-dist" class="metric-val">--</div>
+                    <div class="metric-subtext">CIELAB ΔE centroid convergence</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">Skin Tone Protection</div>
+                    <div id="metric-skin" class="metric-val">Protected</div>
+                    <div class="metric-subtext">Hue preservation constraint</div>
+                </div>
+            </div>
+
+            <!-- EXPLANATION & RESEARCH CITATIONS -->
+            <div class="explanation-grid">
+                <div class="explanation-box">
+                    <h3>Colorist Transform Summary</h3>
+                    <p id="explanation-text" class="explanation-text"></p>
+                </div>
+
+                <div class="citations-box">
+                    <h3>Grounded Cinematography Citations (Parallel)</h3>
+                    <div id="citations-list" class="citations-list"></div>
+                </div>
+            </div>
+
+            <!-- DOWNLOAD ACTIONS -->
+            <div class="download-bar">
+                <a id="btn-download-video" class="btn btn-primary" download>
+                    📥 Download Graded Video (.mp4)
+                </a>
+                <a id="btn-download-lut" class="btn btn-secondary" download>
+                    💾 Download 3D LUT (.cube)
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <p>Google Cloud "Agentic Cinema: The Blockbuster Hackathon" — Parallel Search & Web Intelligence Track</p>
+    </footer>
+
+    <script src="/app.js"></script>
+</body>
+</html>
