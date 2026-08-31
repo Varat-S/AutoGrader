@@ -1,5 +1,6 @@
 ﻿import os
 import json
+import time
 from typing import List, Optional
 from dotenv import load_dotenv
 from parallel import Parallel
@@ -72,7 +73,8 @@ def research_cinematography_principles(
 def synthesize_creative_specification(
     creative_prompt: str,
     research_result: CinematographyResearchResult,
-    genai_client: Optional[genai.Client] = None
+    genai_client: Optional[genai.Client] = None,
+    max_retries: int = 3
 ) -> CreativeSpecification:
     if genai_client is None:
         genai_client = get_genai_client()
@@ -106,12 +108,22 @@ Return strictly conforming JSON matching the schema.
         temperature=0.2,
     )
 
-    response = genai_client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=config,
-    )
-
-    data = json.loads(response.text)
-    data["citations"] = [s.model_dump() for s in research_result.sources]
-    return CreativeSpecification(**data)
+    for attempt in range(max_retries):
+        try:
+            response = genai_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+                config=config,
+            )
+            data = json.loads(response.text)
+            data["citations"] = [s.model_dump() for s in research_result.sources]
+            return CreativeSpecification(**data)
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                wait_time = 15 * (attempt + 1)
+                print(f"[Gemini] Rate limit hit during synthesis. Waiting {wait_time}s before retry (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise e
+                
+    raise RuntimeError("Gemini API rate limit exceeded during synthesis. Please wait 30 seconds.")

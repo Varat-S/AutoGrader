@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.models.analysis import ShotSemanticAnalysis, ShotMetrics, CreativeSpecification
 from app.models.grade import ColorGradeParams, ConsistencyScore, GradeResult
-from app.tools.inspect_footage import inspect_footage_semantics
+from app.tools.inspect_footage import inspect_all_shots_batched
 from app.tools.measure_color import measure_shot_color
 from app.tools.research import research_cinematography_principles, synthesize_creative_specification
 from app.tools.calculate_grade import calculate_creative_grade
@@ -34,26 +34,30 @@ class AutonomousColoristAgent:
                 
         log_event(f"Starting Autonomous Colorist job '{job_id}' with {len(video_paths)} clips.")
         
-        # 1. PERCEIVE: Multimodal Video Inspection with Gemini
+        # 1. PERCEIVE: Single Batched Multimodal Video Inspection with Gemini (1 API call)
         log_event("Inspecting footage semantics with Gemini 3.6 Flash...")
-        semantic_analyses: List[ShotSemanticAnalysis] = []
-        for i, path in enumerate(video_paths):
-            shot_id = f"shot_{chr(65 + i)}"
-            log_event(f"Analyzing {shot_id} semantics ({Path(path).name})...")
-            analysis = inspect_footage_semantics(path, shot_id=shot_id)
-            semantic_analyses.append(analysis)
-            log_event(f"  -> {shot_id}: {analysis.lighting_environment} ({analysis.time_of_day}), Exposure: {analysis.exposure_assessment}")
+        inspection_result = inspect_all_shots_batched(video_paths)
+        semantic_analyses = inspection_result.shots
+        is_continuous_sequence = (inspection_result.scene_relationship == "continuous_sequence")
+        
+        for s in semantic_analyses:
+            log_event(f"  -> {s.shot_id}: {s.lighting_environment} ({s.time_of_day}), Exposure: {s.exposure_assessment}")
             
         # Determine Reference Shot
         if reference_index is not None and 0 <= reference_index < len(video_paths):
             ref_idx = reference_index
         else:
-            ref_idx = max(range(len(semantic_analyses)), key=lambda i: semantic_analyses[i].reference_suitability_score)
-            
+            rec_id = inspection_result.recommended_reference_shot_id
+            ref_idx = 0
+            for idx, s in enumerate(semantic_analyses):
+                if s.shot_id == rec_id:
+                    ref_idx = idx
+                    break
+                    
         ref_shot_id = f"shot_{chr(65 + ref_idx)}"
         ref_path = video_paths[ref_idx]
         ref_semantic = semantic_analyses[ref_idx]
-        log_event(f"Selected '{ref_shot_id}' as master technical reference (Suitability: {ref_semantic.reference_suitability_score:.2f}).")
+        log_event(f"Selected '{ref_shot_id}' as master technical reference (Scene context: {ref_semantic.lighting_environment}).")
         
         # 2. MEASURE: Extract numerical color statistics with OpenCV
         log_event("Measuring numerical color distributions in CIELAB space...")
@@ -89,9 +93,7 @@ class AutonomousColoristAgent:
             metrics = shot_metrics[i]
             semantic = semantic_analyses[i]
             is_ref = (i == ref_idx)
-            
-            # Determine if target shot is from same continuous scene as reference
-            is_same_scene = (
+            is_same_scene = is_continuous_sequence or (
                 not is_ref and
                 semantic.lighting_environment == ref_semantic.lighting_environment and
                 semantic.time_of_day == ref_semantic.time_of_day
@@ -102,7 +104,7 @@ class AutonomousColoristAgent:
             elif is_same_scene:
                 log_event(f"Matching {shot_id} to continuous scene reference {ref_shot_id}...")
             else:
-                log_event(f"Grading {shot_id} (Independent scene: {semantic.lighting_environment}) with unified film emulation...")
+                log_event(f"Grading {shot_id} (Independent scene: {semantic.lighting_environment}) with unified film look...")
                 
             before_score = compute_consistency_score_helper(ref_metrics, metrics)
             
@@ -146,7 +148,7 @@ class AutonomousColoristAgent:
                 explanation = (
                     f"Continuous scene match to {ref_shot_id} with unified '{creative_spec.look_title}' style. "
                     f"{'Protected skin tones. ' if skin_prot else ''}"
-                    f"Consistency improved from {before_score.overall_score} to {after_score.overall_score}."
+                    f"Consistency score: {after_score.overall_score}/100."
                 )
             else:
                 explanation = (
