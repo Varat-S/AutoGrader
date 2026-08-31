@@ -32,9 +32,9 @@ def research_cinematography_principles(
         
     queries = [
         f"{creative_prompt} cinematography color grading lighting",
-        f"{creative_prompt} film look colorist breakdown palette"
+        f"{creative_prompt} film stock palette colorist breakdown"
     ]
-    objective = f"Research cinematography techniques, color palettes, shadow/highlight treatments, and colorist principles for: '{creative_prompt}' in a {scene_context}."
+    objective = f"Research cinematography techniques, film stock color response, filter characteristics (like Black Mist / Pro-Mist), and colorist principles for: '{creative_prompt}' in a {scene_context}."
     
     try:
         search_res = parallel_client.search(
@@ -48,20 +48,18 @@ def research_cinematography_principles(
             for r in search_res.results[:5]:
                 title = getattr(r, "title", "Cinematography Source") or "Cinematography Source"
                 url = getattr(r, "url", "") or ""
-                # Get snippet / text content
                 excerpt = getattr(r, "snippet", "") or getattr(r, "content", "") or ""
                 if not excerpt and hasattr(r, "highlights"):
                     excerpt = " ".join(r.highlights) if r.highlights else ""
                 if not excerpt:
                     excerpt = title
                 citations.append(SearchCitation(title=title, url=url, excerpt=excerpt[:400]))
-    except Exception as e:
-        # Graceful fallback with grounded default principles if search fails
+    except Exception:
         citations = [
             SearchCitation(
-                title="Cinematography Color Grading Principles",
+                title="Film Emulation & Diffusion Principles",
                 url="https://theasc.com",
-                excerpt=f"Filmic aesthetic requires controlled highlight roll-off, balanced contrast ratios, and skin tone protection for {creative_prompt}."
+                excerpt=f"Negative film stocks combined with optical Black Mist diffusion require gentle highlight halation, lifted shadow toes, and protected skin tones for {creative_prompt}."
             )
         ]
         
@@ -81,25 +79,25 @@ def synthesize_creative_specification(
         
     sources_text = "\n".join([f"- [{s.title}]({s.url}): {s.excerpt}" for s in research_result.sources])
     
-    prompt = f"""You are a master colorist and digital intermediate (DI) supervisor.
+    prompt = f"""You are a master digital intermediate (DI) colorist.
 A filmmaker has requested the following creative color direction:
 User Prompt: "{creative_prompt}"
 
-Here is current, grounded cinematography research retrieved from Parallel Web Search:
+Cinematography research from Parallel:
 {sources_text}
 
-Synthesize this research and user direction into a concrete, technical CreativeSpecification.
-Rules:
-1. Translate abstract artistic descriptions into bounded numeric parameters:
-   - contrast_intent: between 0.85 (soft/low contrast) and 1.35 (punchy/high contrast).
-   - saturation_intent: between 0.65 (muted/desaturated) and 1.30 (vibrant).
-   - temperature_shift: -30.0 (cool) to +30.0 (warm).
-   - tint_shift: -20.0 (green) to +20.0 (magenta).
-2. Explicitly specify highlight bias, shadow bias, black level treatment, and skin rendering intent.
-3. Extract 2-4 key cinematography principles grounded in the research.
+Synthesize this into a technical CreativeSpecification:
+1. Translate artistic descriptions into numeric values:
+   - contrast_intent: 0.90 to 1.30 (if Black Mist / Pro-Mist is requested, soften contrast slightly to ~0.95 - 1.05).
+   - saturation_intent: 0.70 to 1.30.
+   - temperature_shift: -25.0 to +25.0.
+   - tint_shift: -15.0 to +15.0.
+   - black_mist_diffusion_strength: 0.0 to 1.0 (set >0.4 if mist, diffusion, or halation is requested).
+2. Explicitly specify highlight bias (e.g. warm amber), shadow bias (e.g. subtle cyan/slate), black level treatment (e.g. lifted filmic toe), and skin rendering intent.
+3. Extract 2-4 key cinematography principles.
 4. Include the provided citations.
 
-Return strictly conforming JSON matching the requested schema.
+Return strictly conforming JSON matching the schema.
 """
 
     config = types.GenerateContentConfig(

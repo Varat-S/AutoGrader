@@ -42,6 +42,7 @@ class AutonomousColoristAgent:
             log_event(f"Analyzing {shot_id} semantics ({Path(path).name})...")
             analysis = inspect_footage_semantics(path, shot_id=shot_id)
             semantic_analyses.append(analysis)
+            log_event(f"  -> {shot_id}: {analysis.lighting_environment} ({analysis.time_of_day}), Exposure: {analysis.exposure_assessment}")
             
         # Determine Reference Shot
         if reference_index is not None and 0 <= reference_index < len(video_paths):
@@ -78,9 +79,9 @@ class AutonomousColoristAgent:
             creative_prompt=creative_prompt,
             research_result=research_result
         )
-        log_event(f"Synthesized Look: '{creative_spec.look_title}' (Contrast: {creative_spec.contrast_intent}, Saturation: {creative_spec.saturation_intent})")
+        log_event(f"Synthesized Look: '{creative_spec.look_title}' (Contrast: {creative_spec.contrast_intent}x, Saturation: {creative_spec.saturation_intent}x)")
         
-        # 4. ACT, EVALUATE & REVISE: Grade ALL Shots in Sequence (including Master Reference)
+        # 4. ACT, EVALUATE & REVISE: Grade ALL Shots in Sequence
         graded_results: List[GradeResult] = []
         
         for i, path in enumerate(video_paths):
@@ -89,7 +90,20 @@ class AutonomousColoristAgent:
             semantic = semantic_analyses[i]
             is_ref = (i == ref_idx)
             
-            log_event(f"Calculating grade for {shot_id}{' (Master Reference)' if is_ref else ''}...")
+            # Determine if target shot is from same continuous scene as reference
+            is_same_scene = (
+                not is_ref and
+                semantic.lighting_environment == ref_semantic.lighting_environment and
+                semantic.time_of_day == ref_semantic.time_of_day
+            )
+            
+            if is_ref:
+                log_event(f"Grading Master Reference {shot_id} with '{creative_spec.look_title}'...")
+            elif is_same_scene:
+                log_event(f"Matching {shot_id} to continuous scene reference {ref_shot_id}...")
+            else:
+                log_event(f"Grading {shot_id} (Independent scene: {semantic.lighting_environment}) with unified film emulation...")
+                
             before_score = compute_consistency_score_helper(ref_metrics, metrics)
             
             # Skin protection check
@@ -100,8 +114,10 @@ class AutonomousColoristAgent:
             params = calculate_creative_grade(
                 reference=ref_metrics,
                 target=metrics,
+                target_semantic=semantic,
                 creative_spec=creative_spec,
-                skin_protection_required=skin_prot
+                is_reference_shot=is_ref,
+                is_same_scene=is_same_scene
             )
             
             # Render Preview
@@ -112,30 +128,8 @@ class AutonomousColoristAgent:
             
             # Evaluate Preview
             eval_metrics, after_score = evaluate_grade(ref_metrics, preview_video)
-            log_event(f"{shot_id} preview consistency: {after_score.overall_score}/100.")
+            log_event(f"{shot_id} consistency: {after_score.overall_score}/100.")
             
-            # Autonomous Revision Loop (if target shot is far off)
-            if not is_ref and after_score.overall_score < 70.0:
-                log_event(f"Consistency ({after_score.overall_score}) below target. Initiating autonomous revision...")
-                revised_params = ColorGradeParams(
-                    exposure_ev=params.exposure_ev,
-                    contrast=1.0 + (params.contrast - 1.0) * 0.7,
-                    pivot=0.5,
-                    saturation=params.saturation,
-                    temperature=params.temperature * 0.7,
-                    tint=params.tint * 0.7,
-                    lab_l_gain=params.lab_l_gain,
-                    lab_l_offset=params.lab_l_offset,
-                    lab_a_gain=params.lab_a_gain,
-                    lab_a_offset=params.lab_a_offset,
-                    lab_b_gain=params.lab_b_gain,
-                    lab_b_offset=params.lab_b_offset
-                )
-                render_grade(path, revised_params, preview_video, preview_lut, is_preview=True)
-                eval_metrics, after_score = evaluate_grade(ref_metrics, preview_video)
-                params = revised_params
-                log_event(f"Revised consistency: {after_score.overall_score}/100.")
-                
             # Render Final Full-Quality Master
             final_lut = str(self.work_dir / f"{job_id}_{shot_id}_grade.cube")
             final_video = str(self.work_dir / f"{job_id}_{shot_id}_graded.mp4")
@@ -144,15 +138,21 @@ class AutonomousColoristAgent:
             
             if is_ref:
                 explanation = (
-                    f"Master technical reference. Applied creative '{creative_spec.look_title}' style "
+                    f"Master technical reference. Applied creative '{creative_spec.look_title}' film stock emulation "
                     f"(Contrast: {creative_spec.contrast_intent}x, Saturation: {creative_spec.saturation_intent}x). "
                     f"{'Preserved natural skin tones. ' if skin_prot else ''}"
                 )
-            else:
+            elif is_same_scene:
                 explanation = (
-                    f"Matched against {ref_shot_id} with statistical CIELAB transfer and unified with '{creative_spec.look_title}' style. "
+                    f"Continuous scene match to {ref_shot_id} with unified '{creative_spec.look_title}' style. "
                     f"{'Protected skin tones. ' if skin_prot else ''}"
                     f"Consistency improved from {before_score.overall_score} to {after_score.overall_score}."
+                )
+            else:
+                explanation = (
+                    f"Scene-aware film emulation ({semantic.lighting_environment}). Preserved natural scene exposure "
+                    f"while harmonizing color palette and applying '{creative_spec.look_title}' style. "
+                    f"{'Protected skin tones. ' if skin_prot else ''}"
                 )
                 
             graded_results.append(GradeResult(

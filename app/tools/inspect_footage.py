@@ -32,31 +32,30 @@ def inspect_footage_semantics(
     if frames is None:
         frames, _ = extract_sampled_frames(video_path, fractions=[0.25, 0.50, 0.75])
         
-    # Convert OpenCV BGR frames to PIL RGB Images for Gemini
     pil_images = []
     for f in frames:
         rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-        # Resize to max 720p height for token efficiency
         h, w, _ = rgb.shape
         if h > 720:
             scale = 720.0 / h
             rgb = cv2.resize(rgb, (int(w * scale), 720), interpolation=cv2.INTER_AREA)
         pil_images.append(Image.fromarray(rgb))
         
-    prompt = f"""You are an expert film colorist and cinematographer analyzing video footage for shot-to-shot color grading.
-Inspect the provided sequential keyframes from video shot '{shot_id}'.
+    prompt = f"""You are a master digital intermediate (DI) colorist and Director of Photography inspecting video footage for shot '{shot_id}'.
 
-Analyze:
-1. Scene setting and visual content.
-2. Lighting environment (e.g. outdoor natural daylight, overcast, direct sunlight, golden hour, indoor tungsten).
-3. Time of day.
-4. Presence of human subjects, faces, or skin tones. If present, set skin_protection_required=True.
-5. Dominant color temperature or cast (warm, cool, magenta, green, neutral).
-6. Practical / intentional light sources that should not be aggressively neutralized.
-7. Likely neutral reference objects (e.g. pavement, gray walls, white shirts).
-8. Suitability score (0.0 to 1.0) to serve as the master technical reference shot.
+Analyze this specific scene independently:
+1. Setting and visual content.
+2. Lighting environment (e.g. outdoor natural daylight, direct sun, overcast, golden hour, indoor tungsten, twilight).
+3. Time of day (day, night, golden_hour, dusk, dawn).
+4. Exposure assessment (balanced, underexposed, overexposed, high_key, low_key).
+5. Target exposure compensation in EV stops (-2.0 to +2.0) needed to optimize this specific shot's dynamic range without blowing highlights or losing mood.
+6. Black point lift (0.0 to 15.0) to emulate soft filmic shadow density / Black Mist diffusion.
+7. Presence of human subjects, faces, or skin tones (if present, skin_protection_required=True).
+8. Dominant color temperature or cast.
+9. Practical / intentional light sources.
+10. Reference suitability score (0.0 to 1.0).
 
-Return your analysis strictly matching the requested JSON schema.
+Return strictly conforming JSON matching the schema.
 """
 
     contents = [prompt] + pil_images
@@ -73,7 +72,6 @@ Return your analysis strictly matching the requested JSON schema.
         config=config,
     )
 
-    # Parse validated JSON into Pydantic model
     data = json.loads(response.text)
     data["shot_id"] = shot_id
     return ShotSemanticAnalysis(**data)
