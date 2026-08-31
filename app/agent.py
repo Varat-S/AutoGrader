@@ -47,7 +47,6 @@ class AutonomousColoristAgent:
         if reference_index is not None and 0 <= reference_index < len(video_paths):
             ref_idx = reference_index
         else:
-            # Auto-select shot with highest reference suitability
             ref_idx = max(range(len(semantic_analyses)), key=lambda i: semantic_analyses[i].reference_suitability_score)
             
         ref_shot_id = f"shot_{chr(65 + ref_idx)}"
@@ -81,54 +80,50 @@ class AutonomousColoristAgent:
         )
         log_event(f"Synthesized Look: '{creative_spec.look_title}' (Contrast: {creative_spec.contrast_intent}, Saturation: {creative_spec.saturation_intent})")
         
-        # 4. ACT, EVALUATE & REVISE: Grade Target Shots
+        # 4. ACT, EVALUATE & REVISE: Grade ALL Shots in Sequence (including Master Reference)
         graded_results: List[GradeResult] = []
         
         for i, path in enumerate(video_paths):
-            if i == ref_idx:
-                continue # Skip reference shot for matching, or apply creative look directly
-                
-            tgt_shot_id = f"shot_{chr(65 + i)}"
-            tgt_metrics = shot_metrics[i]
-            tgt_semantic = semantic_analyses[i]
+            shot_id = f"shot_{chr(65 + i)}"
+            metrics = shot_metrics[i]
+            semantic = semantic_analyses[i]
+            is_ref = (i == ref_idx)
             
-            log_event(f"Calculating technical & creative grade for {tgt_shot_id}...")
-            before_score = compute_consistency_score_helper(ref_metrics, tgt_metrics)
-            log_event(f"{tgt_shot_id} initial consistency: {before_score.overall_score}/100.")
+            log_event(f"Calculating grade for {shot_id}{' (Master Reference)' if is_ref else ''}...")
+            before_score = compute_consistency_score_helper(ref_metrics, metrics)
             
             # Skin protection check
-            skin_prot = tgt_semantic.skin_protection_required or ref_semantic.skin_protection_required
+            skin_prot = semantic.skin_protection_required or ref_semantic.skin_protection_required
             if skin_prot:
-                log_event(f"Skin tone protection ACTIVE for {tgt_shot_id}.")
+                log_event(f"Skin tone protection ACTIVE for {shot_id}.")
                 
             params = calculate_creative_grade(
                 reference=ref_metrics,
-                target=tgt_metrics,
+                target=metrics,
                 creative_spec=creative_spec,
                 skin_protection_required=skin_prot
             )
             
             # Render Preview
-            preview_lut = str(self.work_dir / f"{job_id}_{tgt_shot_id}_preview.cube")
-            preview_video = str(self.work_dir / f"{job_id}_{tgt_shot_id}_preview.mp4")
-            log_event(f"Rendering fast preview for {tgt_shot_id}...")
+            preview_lut = str(self.work_dir / f"{job_id}_{shot_id}_preview.cube")
+            preview_video = str(self.work_dir / f"{job_id}_{shot_id}_preview.mp4")
+            log_event(f"Rendering preview for {shot_id}...")
             render_grade(path, params, preview_video, preview_lut, is_preview=True)
             
             # Evaluate Preview
             eval_metrics, after_score = evaluate_grade(ref_metrics, preview_video)
-            log_event(f"{tgt_shot_id} preview consistency: {after_score.overall_score}/100.")
+            log_event(f"{shot_id} preview consistency: {after_score.overall_score}/100.")
             
-            # Autonomous Revision Loop (if consistency below threshold)
-            if after_score.overall_score < 75.0:
+            # Autonomous Revision Loop (if target shot is far off)
+            if not is_ref and after_score.overall_score < 70.0:
                 log_event(f"Consistency ({after_score.overall_score}) below target. Initiating autonomous revision...")
-                # Moderating temperature / color offsets to prioritize baseline convergence
                 revised_params = ColorGradeParams(
                     exposure_ev=params.exposure_ev,
-                    contrast=1.0 + (params.contrast - 1.0) * 0.5,
+                    contrast=1.0 + (params.contrast - 1.0) * 0.7,
                     pivot=0.5,
                     saturation=params.saturation,
-                    temperature=params.temperature * 0.5,
-                    tint=params.tint * 0.5,
+                    temperature=params.temperature * 0.7,
+                    tint=params.tint * 0.7,
                     lab_l_gain=params.lab_l_gain,
                     lab_l_offset=params.lab_l_offset,
                     lab_a_gain=params.lab_a_gain,
@@ -142,21 +137,27 @@ class AutonomousColoristAgent:
                 log_event(f"Revised consistency: {after_score.overall_score}/100.")
                 
             # Render Final Full-Quality Master
-            final_lut = str(self.work_dir / f"{job_id}_{tgt_shot_id}_grade.cube")
-            final_video = str(self.work_dir / f"{job_id}_{tgt_shot_id}_graded.mp4")
-            log_event(f"Rendering final master video & 3D LUT for {tgt_shot_id}...")
+            final_lut = str(self.work_dir / f"{job_id}_{shot_id}_grade.cube")
+            final_video = str(self.work_dir / f"{job_id}_{shot_id}_graded.mp4")
+            log_event(f"Rendering final master video & 3D LUT for {shot_id}...")
             render_grade(path, params, final_video, final_lut, is_preview=False)
             
-            explanation = (
-                f"Matched against {ref_shot_id} with statistical CIELAB transfer. "
-                f"Applied '{creative_spec.look_title}' style (Contrast: {creative_spec.contrast_intent}, Saturation: {creative_spec.saturation_intent}). "
-                f"{'Protected skin tones from color contamination. ' if skin_prot else ''}"
-                f"Consistency improved from {before_score.overall_score} to {after_score.overall_score}."
-            )
-            
+            if is_ref:
+                explanation = (
+                    f"Master technical reference. Applied creative '{creative_spec.look_title}' style "
+                    f"(Contrast: {creative_spec.contrast_intent}x, Saturation: {creative_spec.saturation_intent}x). "
+                    f"{'Preserved natural skin tones. ' if skin_prot else ''}"
+                )
+            else:
+                explanation = (
+                    f"Matched against {ref_shot_id} with statistical CIELAB transfer and unified with '{creative_spec.look_title}' style. "
+                    f"{'Protected skin tones. ' if skin_prot else ''}"
+                    f"Consistency improved from {before_score.overall_score} to {after_score.overall_score}."
+                )
+                
             graded_results.append(GradeResult(
                 reference_shot_id=ref_shot_id,
-                target_shot_id=tgt_shot_id,
+                target_shot_id=shot_id,
                 params=params,
                 lut_path=final_lut,
                 output_video_path=final_video,

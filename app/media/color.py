@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import cv2
 from typing import List, Tuple, Dict, Any
 from app.models.analysis import FrameMetrics, ShotMetrics
@@ -14,6 +14,7 @@ def compute_frame_metrics(bgr_frame: np.ndarray, timestamp_sec: float = 0.0) -> 
     b, g, r = bgr_frame[:, :, 0], bgr_frame[:, :, 1], bgr_frame[:, :, 2]
     r_mean, g_mean, b_mean = float(np.mean(r)), float(np.mean(g)), float(np.mean(b))
     
+    # Rec.709 Luminance
     y = 0.2126 * r.astype(np.float32) + 0.7152 * g.astype(np.float32) + 0.0722 * b.astype(np.float32)
     mean_lum = float(np.mean(y))
     median_lum = float(np.median(y))
@@ -23,6 +24,7 @@ def compute_frame_metrics(bgr_frame: np.ndarray, timestamp_sec: float = 0.0) -> 
     shadow_clip = float(np.sum(y < 2.0) / total_pixels * 100.0)
     highlight_clip = float(np.sum(y > 253.0) / total_pixels * 100.0)
     
+    # Perceptual CIELAB
     lab = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2LAB).astype(np.float32)
     l_std = lab[:, :, 0] * (100.0 / 255.0)
     a_std = lab[:, :, 1] - 128.0
@@ -76,15 +78,15 @@ def aggregate_shot_metrics(
     avg_b_std = float(np.mean([m.lab_b_std for m in frame_metrics]))
     avg_chroma = float(np.mean([m.mean_chroma for m in frame_metrics]))
     
-    cast = 'neutral'
+    cast = "neutral"
     if avg_b > 10.0 and avg_a > 2.0:
-        cast = 'warm / golden'
+        cast = "warm / golden"
     elif avg_b < -10.0:
-        cast = 'cool / blue'
+        cast = "cool / blue"
     elif avg_a < -8.0:
-        cast = 'green tint'
+        cast = "green tint"
     elif avg_a > 10.0:
-        cast = 'magenta tint'
+        cast = "magenta tint"
         
     return ShotMetrics(
         shot_id=shot_id,
@@ -113,15 +115,14 @@ def calculate_deterministic_match_params(
     tgt_l_std, tgt_a_std, tgt_b_std = target.avg_lab_std
     
     eps = 1e-4
-    l_gain = float(np.clip(ref_l_std / (tgt_l_std + eps), 0.5, 2.0))
-    a_gain = float(np.clip(ref_a_std / (tgt_a_std + eps), 0.5, 2.0))
-    b_gain = float(np.clip(ref_b_std / (tgt_b_std + eps), 0.5, 2.0))
+    l_gain = float(np.clip(ref_l_std / (tgt_l_std + eps), 0.7, 1.6))
+    a_gain = float(np.clip(ref_a_std / (tgt_a_std + eps), 0.6, 1.8))
+    b_gain = float(np.clip(ref_b_std / (tgt_b_std + eps), 0.6, 1.8))
     
     l_offset = float(ref_l_mean - l_gain * tgt_l_mean)
     a_offset = float(ref_a_mean - a_gain * tgt_a_mean)
     b_offset = float(ref_b_mean - b_gain * tgt_b_mean)
     
-    # Blend with identity
     l_gain = 1.0 + (l_gain - 1.0) * strength
     a_gain = 1.0 + (a_gain - 1.0) * strength
     b_gain = 1.0 + (b_gain - 1.0) * strength
@@ -145,24 +146,33 @@ def calculate_deterministic_match_params(
     )
 
 def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) -> np.ndarray:
-    img = bgr_frame.astype(np.float32) / 255.0
+    # 1. Floating-point working representation [0, 1]
+    img = np.clip(bgr_frame.astype(np.float32) / 255.0, 0.0, 1.0)
     
+    # 2. Exposure
     if abs(params.exposure_ev) > 0.01:
         img = img * float(2.0 ** params.exposure_ev)
         
+    # 3. Filmic Contrast & Tone Curve around pivot
     if abs(params.contrast - 1.0) > 0.01:
-        img = params.pivot + (img - params.pivot) * params.contrast
+        x_norm = np.clip(img, 0.0, 1.0)
+        p = float(np.clip(params.pivot, 0.05, 0.95))
+        c = float(params.contrast)
+        below = p * (np.maximum(0.0, x_norm / p) ** c)
+        above = 1.0 - (1.0 - p) * (np.maximum(0.0, (1.0 - x_norm) / (1.0 - p)) ** c)
+        img = np.where(x_norm < p, below, above)
         
+    # 4. White balance (Temperature / Tint)
     if abs(params.temperature) > 0.1 or abs(params.tint) > 0.1:
-        temp_f = params.temperature / 200.0
-        tint_f = params.tint / 200.0
-        img[:, :, 2] = img[:, :, 2] * (1.0 + temp_f)
-        img[:, :, 0] = img[:, :, 0] * (1.0 - temp_f)
-        img[:, :, 1] = img[:, :, 1] * (1.0 - tint_f)
+        temp_f = params.temperature / 150.0
+        tint_f = params.tint / 150.0
+        img[:, :, 2] = img[:, :, 2] * (1.0 + temp_f) # Red
+        img[:, :, 0] = img[:, :, 0] * (1.0 - temp_f) # Blue
+        img[:, :, 1] = img[:, :, 1] * (1.0 - tint_f) # Green
         
     img = np.clip(img, 0.0, 1.0)
     
-    # CIELAB Transform
+    # 5. CIELAB Perceptual Color Alignment
     uint8_img = (img * 255.0).astype(np.uint8)
     lab = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2LAB).astype(np.float32)
     
@@ -181,6 +191,7 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
     
     bgr_graded = cv2.cvtColor(np.clip(lab_out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32) / 255.0
     
+    # 6. Saturation in HSV space
     if abs(params.saturation - 1.0) > 0.01:
         hsv = cv2.cvtColor((np.clip(bgr_graded, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * params.saturation, 0.0, 255.0)
@@ -190,15 +201,15 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
 
 def compute_consistency_score(shot_a: ShotMetrics, shot_b: ShotMetrics) -> ConsistencyScore:
     lum_diff = abs(shot_a.avg_luminance - shot_b.avg_luminance)
-    lum_score = float(100.0 * np.exp(-lum_diff / 30.0))
+    lum_score = float(100.0 * np.exp(-lum_diff / 35.0))
     
     chroma_diff = abs(shot_a.avg_chroma - shot_b.avg_chroma)
-    chroma_score = float(100.0 * np.exp(-chroma_diff / 20.0))
+    chroma_score = float(100.0 * np.exp(-chroma_diff / 25.0))
     
     l1, a1, b1 = shot_a.avg_lab_mean
     l2, a2, b2 = shot_b.avg_lab_mean
     delta_e = float(np.sqrt((l1 - l2)**2 + (a1 - a2)**2 + (b1 - b2)**2))
-    dist_score = float(100.0 * np.exp(-delta_e / 25.0))
+    dist_score = float(100.0 * np.exp(-delta_e / 30.0))
     
     overall = 0.40 * lum_score + 0.30 * chroma_score + 0.30 * dist_score
     overall = float(np.clip(overall, 0.0, 100.0))
@@ -208,5 +219,5 @@ def compute_consistency_score(shot_a: ShotMetrics, shot_b: ShotMetrics) -> Consi
         luminance_similarity=round(lum_score, 1),
         chroma_similarity=round(chroma_score, 1),
         color_distribution_similarity=round(dist_score, 1),
-        notes=f'Delta E={round(delta_e, 2)}, Lum diff={round(lum_diff, 1)}'
+        notes=f"Delta E={round(delta_e, 2)}, Lum diff={round(lum_diff, 1)}"
     )

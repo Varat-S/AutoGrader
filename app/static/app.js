@@ -91,7 +91,7 @@ async function fetchJobDetails(jobId) {
             row.className = "clip-row";
             row.innerHTML = `
                 <span><strong>${tag}</strong>: ${name}</span>
-                <span class="clip-tag">${name.includes("neutral") ? "Daylight Ref" : (name.includes("under") ? "Underexposed" : (name.includes("warm") ? "Warm Cast" : "Source"))}</span>
+                <span class="clip-tag">${idx === 0 ? "Shot A" : "Shot " + String.fromCharCode(65 + idx)}</span>
             `;
             clipsList.appendChild(row);
             
@@ -139,7 +139,7 @@ function startPolling(jobId) {
         if (job.state === "completed") {
             clearInterval(pollInterval);
             currentJobResult = job.result;
-            renderResults(job.result);
+            renderResults(job.result, job.source_videos);
         } else if (job.state === "failed") {
             clearInterval(pollInterval);
             alert("Error during agent processing: " + (job.error || "Unknown error"));
@@ -188,7 +188,7 @@ function updateAgentUI(job) {
 }
 
 // 3. RENDER RESULTS
-function renderResults(result) {
+function renderResults(result, sourceVideos) {
     document.getElementById("results-panel").style.display = "block";
     document.getElementById("agent-status-badge").innerText = "Completed";
     document.getElementById("agent-status-badge").className = "status-badge badge-done";
@@ -198,9 +198,9 @@ function renderResults(result) {
     const specCard = document.getElementById("creative-spec-card");
     specCard.innerHTML = `
         <div class="spec-title-row">
-            <div class="spec-title">Look: "${spec.look_title}" (Master Reference: ${result.reference_shot_id})</div>
+            <div class="spec-title">✨ Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})</div>
         </div>
-        <p style="font-size: 0.85rem; color: #94a3b8;">${spec.target_aesthetic}</p>
+        <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem;">${spec.target_aesthetic}</p>
         <div class="spec-badges">
             <span class="spec-badge">Contrast: ${spec.contrast_intent}x</span>
             <span class="spec-badge">Saturation: ${spec.saturation_intent}x</span>
@@ -226,29 +226,33 @@ function renderResults(result) {
     const shotTabs = document.getElementById("shot-tabs");
     shotTabs.innerHTML = "";
     result.results.forEach((r, idx) => {
+        const isMaster = (r.target_shot_id === result.reference_shot_id);
         const btn = document.createElement("button");
         btn.className = `shot-tab ${idx === 0 ? "active" : ""}`;
-        btn.innerText = `${r.target_shot_id} Match`;
+        btn.innerText = `${r.target_shot_id}${isMaster ? " (Master Ref)" : ""}`;
         btn.addEventListener("click", () => {
             document.querySelectorAll(".shot-tab").forEach(t => t.classList.remove("active"));
             btn.classList.add("active");
-            displayShotResult(r);
+            displayShotResult(r, idx, sourceVideos);
         });
         shotTabs.appendChild(btn);
     });
     
     if (result.results.length > 0) {
-        displayShotResult(result.results[0]);
+        displayShotResult(result.results[0], 0, sourceVideos);
     }
 }
 
-function displayShotResult(res) {
+function displayShotResult(res, shotIdx, sourceVideos) {
     const jobId = currentJobId;
     
-    // Video URLs
-    const targetFilename = res.target_shot_id === "shot_B" ? "underexposed.mp4" : (res.target_shot_id === "shot_C" ? "warm_cast.mp4" : "source.mp4");
-    const beforeVideoUrl = `/api/jobs/${jobId}/files/${targetFilename}`;
+    // Source Video Path
+    let sourceFilename = "source.mp4";
+    if (sourceVideos && sourceVideos[shotIdx]) {
+        sourceFilename = sourceVideos[shotIdx].split("/").pop().split("\\").pop();
+    }
     
+    const beforeVideoUrl = `/api/jobs/${jobId}/files/${sourceFilename}`;
     const gradedVideoFilename = res.output_video_path.split("/").pop().split("\\").pop();
     const lutFilename = res.lut_path.split("/").pop().split("\\").pop();
     
@@ -261,13 +265,17 @@ function displayShotResult(res) {
     playerBefore.src = beforeVideoUrl;
     playerAfter.src = afterVideoUrl;
     
-    document.getElementById("label-source-shot").innerText = `Source: ${res.target_shot_id}`;
-    document.getElementById("label-graded-shot").innerText = `Target: ${res.target_shot_id} (Graded)`;
+    document.getElementById("label-source-shot").innerText = `Source: ${res.target_shot_id} (${sourceFilename})`;
+    document.getElementById("label-graded-shot").innerText = `Graded: ${res.target_shot_id}`;
     
     // Scores
-    document.getElementById("score-before").innerText = Math.round(res.before_consistency.overall_score);
-    document.getElementById("score-after").innerText = Math.round(res.after_consistency.overall_score);
-    document.getElementById("score-delta").innerText = `+${Math.round(res.after_consistency.overall_score - res.before_consistency.overall_score)} points improvement`;
+    const beforeScore = Math.round(res.before_consistency.overall_score);
+    const afterScore = Math.round(res.after_consistency.overall_score);
+    document.getElementById("score-before").innerText = beforeScore;
+    document.getElementById("score-after").innerText = afterScore;
+    
+    const delta = afterScore - beforeScore;
+    document.getElementById("score-delta").innerText = delta >= 0 ? `+${delta} points consistency match` : `Master Style Applied`;
     
     document.getElementById("metric-lum").innerText = `${Math.round(res.after_consistency.luminance_similarity)} / 100`;
     document.getElementById("metric-dist").innerText = `${Math.round(res.after_consistency.color_distribution_similarity)} / 100`;
