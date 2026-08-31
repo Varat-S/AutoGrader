@@ -1,11 +1,13 @@
-﻿# 🎨 Autonomous Multimodal Colorist Assistant
+# 🎨 Autonomous Multimodal Colorist Assistant
 
 > **Research-to-Grade Autonomous Colorist for Cinema & Video Production**  
 > *Google Cloud "Agentic Cinema: The Blockbuster Hackathon" — Parallel (Search & Web Intelligence Track)*
 
+🌐 **Live Web App (Google Cloud Run)**: **[https://autograder-32655487684.us-central1.run.app](https://autograder-32655487684.us-central1.run.app)**
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com)
-[![Gemini](https://img.shields.io/badge/Gemini%203.6-Multimodal%20Vision-8E75B2?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run%20Live-4285F4?logo=googlecloud&logoColor=white)](https://autograder-32655487684.us-central1.run.app)
+[![Gemini](https://img.shields.io/badge/Gemini%203.5-Multimodal%20Vision-8E75B2?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
 [![Parallel](https://img.shields.io/badge/Parallel-Web%20Intelligence-F59E0B)](https://parallel.ai)
 [![OpenCV](https://img.shields.io/badge/OpenCV-CIELAB%20Color%20Science-5C3EE8?logo=opencv&logoColor=white)](https://opencv.org)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-3D%20LUT%20Rendering-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)

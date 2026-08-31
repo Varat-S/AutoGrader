@@ -1,30 +1,24 @@
-﻿# Autonomous Multimodal Colorist Assistant — Project Status
+﻿# Autonomous Multimodal Colorist Assistant - Project Status & Roadmap
 
-## Current Phase
-**PHASE 6 — Local Web Interface & FastAPI Application**
+## 🎯 Hackathon Metadata
+- **Hackathon**: Google Cloud "Agentic Cinema: The Blockbuster Hackathon"
+- **Track**: Parallel — Search & Web Intelligence
+- **Repository**: [https://github.com/Varat-S/AutoGrader](https://github.com/Varat-S/AutoGrader)
+- **Live Cloud Run URL**: [https://autograder-32655487684.us-central1.run.app](https://autograder-32655487684.us-central1.run.app)
+- **Primary Agent Pattern**: Autonomous Multi-Shot Perception $\rightarrow$ Web Research $\rightarrow$ CIELAB Grading $\rightarrow$ Evaluation & Revision $\rightarrow$ Delivery
 
-## Completed Milestones
-- [x] **Phase 0 — Environment & API Verification**:
-  - Python 3.13.3 verified in local `.venv`.
-  - Installed FFmpeg 8.1.1 and ffprobe.
-  - Verified `GEMINI_API_KEY` (Gemini 3.6 Flash) & `PARALLEL_API_KEY` (Parallel Search SDK).
-- [x] **Phase 1 — Deterministic Local Color Proof of Concept**:
-  - Core CIELAB statistical color transfer and 33x33x33 `.cube` LUT generation (`app/media/`).
-  - Unit test suite passing 100%.
-  - Local CLI matching runner (`scripts/local_match.py`).
-- [x] **Phase 2, 3, 4 & 5 — Gemini Semantic Vision, Parallel Web Intelligence & Autonomous Loop**:
-  - `app/tools/inspect_footage.py`: Multimodal scene perception, lighting detection, subject/face detection, skin tone protection flags via Gemini 3.6 Flash.
-  - `app/tools/research.py`: Real-time cinematography research on Parallel Search + creative specification synthesis.
-  - `app/tools/measure_color.py`: Deterministic CIELAB & luminance extraction.
-  - `app/tools/calculate_grade.py`: Multi-shot technical match + creative styling + skin protection clamping.
-  - `app/tools/render.py` & `app/tools/evaluate.py`: Fast preview rendering, evaluation, and final delivery.
-  - `app/agent.py`: Full autonomous multi-shot pipeline with auto-reference selection, evaluation, and autonomous retry/revision loop.
-  - Integration test `tests/integration/test_full_agent.py` passed 100% on a 3-shot sequence.
+---
 
-## Current Blockers
-- None.
+## 📊 Phase Progress Summary
 
-## Next 3 Tasks
-1. **Phase 6 FastAPI Backend**: Build REST endpoints (`POST /api/jobs`, `POST /api/jobs/{id}/run`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/result`).
-2. **Phase 6 Modern Filmmaker Web UI**: Build a responsive HTML5/CSS/JavaScript UI featuring video dropzones, reference selector, creative style prompt, live agent activity feed, before/after video players, and download buttons for `.mp4` & `.cube` LUTs.
-3. **Phase 7 Google Cloud Staging**: Prepare container Dockerfile and staging configuration for Google Cloud Run deployment.
+| Phase | Description | Status | Verification |
+| :--- | :--- | :--- | :--- |
+| **Phase 0** | Workspace & Dependency Initialization | **DONE** | Python 3.13 `.venv`, FFmpeg 8.1.1, OpenCV, Gemini 3.5, Parallel SDK verified |
+| **Phase 1** | Deterministic Local Color Proof-of-Concept | **DONE** | CIELAB perceptual metrics, 33x33x33 `.cube` LUT generation, FFmpeg filter graph |
+| **Phase 2 & 3** | Multimodal Scene Perception & Protection | **DONE** | Gemini multimodal vision: lighting context, subject/face detection, skin tone protection flags |
+| **Phase 4** | Parallel Cinematography Web Intelligence | **DONE** | Parallel search API + Gemini synthesis of bounded creative styling rules & citations |
+| **Phase 5** | Autonomous Multi-Shot Loop & Revision | **DONE** | Auto-reference selection, multi-shot batch processing, fast preview evaluation & revision |
+| **Phase 6** | Web Interface & REST Backend | **DONE** | FastAPI backend + DaVinci-inspired dark theme dashboard with side-by-side synchronized video player |
+| **Phase 7** | Google Cloud Run Deployment | **DONE** | Containerized with Docker, deployed to Google Cloud Run (`https://autograder-32655487684.us-central1.run.app`) |
+| **Phase 8** | Multi-Clip Sequence Hardening & Verification | **DONE** | Tested on real 1080p & 4K UHD footage with highlight roll-off and Black Mist diffusion |
+| **Phase 9** | Final Submission Materials & Polish | **DONE** | MIT License, Architecture Diagrams, Devpost pitch documentation |
