@@ -169,10 +169,12 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
         img[:, :, 2] = img[:, :, 2] * (1.0 + temp_f) # Red
         img[:, :, 0] = img[:, :, 0] * (1.0 - temp_f) # Blue
         img[:, :, 1] = img[:, :, 1] * (1.0 - tint_f) # Green
-        
+
+    # 5. Filmic Highlight Protection Shoulder (prevents hard clipping in highlights & foam)
+    img = np.where(img > 0.80, 0.80 + (img - 0.80) / (1.0 + (img - 0.80) * 2.2), img)
     img = np.clip(img, 0.0, 1.0)
     
-    # 5. CIELAB Perceptual Color Alignment
+    # 6. CIELAB Perceptual Alignment with Tapered Shadow Lift
     uint8_img = (img * 255.0).astype(np.uint8)
     lab = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2LAB).astype(np.float32)
     
@@ -180,7 +182,11 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
     a = lab[:, :, 1] - 128.0
     b = lab[:, :, 2] - 128.0
     
-    l_graded = np.clip(params.lab_l_gain * l + params.lab_l_offset, 0.0, 100.0)
+    # Shadow toe lift weight: 1.0 at L=0, tapering to 0.0 at L=70
+    shadow_lift_weight = np.clip((70.0 - l) / 70.0, 0.0, 1.0) ** 2.0
+    effective_l_offset = params.lab_l_offset * shadow_lift_weight
+    
+    l_graded = np.clip(params.lab_l_gain * l + effective_l_offset, 0.0, 100.0)
     a_graded = np.clip(params.lab_a_gain * a + params.lab_a_offset, -127.0, 127.0)
     b_graded = np.clip(params.lab_b_gain * b + params.lab_b_offset, -127.0, 127.0)
     
@@ -191,7 +197,7 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
     
     bgr_graded = cv2.cvtColor(np.clip(lab_out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32) / 255.0
     
-    # 6. Saturation in HSV space
+    # 7. Saturation in HSV space
     if abs(params.saturation - 1.0) > 0.01:
         hsv = cv2.cvtColor((np.clip(bgr_graded, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * params.saturation, 0.0, 255.0)

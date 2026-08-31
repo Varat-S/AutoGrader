@@ -282,12 +282,14 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     
     document.getElementById("explanation-text").innerText = res.explanation;
     
-    // Download Buttons
+    // Download Buttons with explicit shot tags
     const btnVid = document.getElementById("btn-download-video");
     btnVid.href = afterVideoUrl;
     btnVid.download = `${res.target_shot_id}_graded.mp4`;
+    btnVid.innerText = `⬇ Download ${res.target_shot_id} Video (.mp4)`;
     
     const btnLut = document.getElementById("btn-download-lut");
     btnLut.href = lutUrl;
     btnLut.download = `${res.target_shot_id}_grade.cube`;
+    btnLut.innerText = `⬇ Download ${res.target_shot_id} 3D LUT (.cube)`;
 }
