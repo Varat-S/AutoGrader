@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import cv2
 from typing import List, Tuple, Dict, Any, Optional
 from app.models.analysis import FrameMetrics, ShotMetrics
@@ -104,28 +104,8 @@ def aggregate_shot_metrics(
     )
 
 def is_log_profile(metrics: ShotMetrics) -> bool:
-    # Characteristic of flat log video: black level lifted > 40/255 and low chroma < 12
     p5_avg = float(np.mean([f.p5_luminance for f in metrics.sampled_frames]))
     return (p5_avg > 38.0 and metrics.avg_chroma < 12.0)
-
-def apply_log_to_rec709_cst(bgr_float: np.ndarray, log_type: str = "auto") -> np.ndarray:
-    # 1. Expand flat black floor
-    black_floor = 0.095
-    white_ceil = 0.92
-    
-    img_clamped = np.clip(bgr_float, black_floor, 1.0)
-    expanded = (img_clamped - black_floor) / (white_ceil - black_floor)
-    
-    # 2. De-log S-Curve mapping to Rec.709
-    gamma_corrected = np.power(np.clip(expanded, 0.0, 1.0), 1.55)
-    
-    # 3. Gamut expansion (restore wide gamut color in Rec.709)
-    uint8_img = (np.clip(gamma_corrected, 0.0, 1.0) * 255.0).astype(np.uint8)
-    hsv = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.85, 0.0, 255.0)
-    rec709_bgr = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
-    
-    return np.clip(rec709_bgr, 0.0, 1.0)
 
 def calculate_deterministic_match_params(
     reference: ShotMetrics,
@@ -169,6 +149,27 @@ def calculate_deterministic_match_params(
         lab_b_offset=round(b_offset, 3)
     )
 
+def apply_log_to_rec709_cst(bgr_float: np.ndarray) -> np.ndarray:
+    # 1. Expand flat black floor (D-Log / S-Log3 code value ~30 / 255)
+    black_floor = 0.11
+    white_ceil = 0.95
+    img = np.clip((bgr_float - black_floor) / (white_ceil - black_floor), 0.0, 1.0)
+    
+    # 2. Sigmoidal film S-curve for rich contrast
+    p = 0.40
+    c = 1.35
+    below = p * (np.maximum(0.0, img / p) ** c)
+    above = 1.0 - (1.0 - p) * (np.maximum(0.0, (1.0 - img) / (1.0 - p)) ** c)
+    img = np.where(img < p, below, above)
+    
+    # 3. Gamut expansion to Rec.709
+    uint8_img = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    hsv = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.65, 0.0, 255.0)
+    rec709_bgr = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
+    
+    return np.clip(rec709_bgr, 0.0, 1.0)
+
 def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams, is_log: bool = False) -> np.ndarray:
     # 1. Floating-point working representation [0, 1]
     img = np.clip(bgr_frame.astype(np.float32) / 255.0, 0.0, 1.0)
@@ -199,10 +200,10 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams, 
         img[:, :, 1] = img[:, :, 1] * (1.0 - tint_f) # Green
 
     # 6. Filmic Highlight Protection Shoulder (prevents hard clipping in highlights & foam)
-    img = np.where(img > 0.80, 0.80 + (img - 0.80) / (1.0 + (img - 0.80) * 2.2), img)
+    img = np.where(img > 0.85, 0.85 + (img - 0.85) / (1.0 + (img - 0.85) * 2.0), img)
     img = np.clip(img, 0.0, 1.0)
     
-    # 7. CIELAB Perceptual Alignment with Tapered Shadow Lift
+    # 7. CIELAB Perceptual Color Alignment
     uint8_img = (img * 255.0).astype(np.uint8)
     lab = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2LAB).astype(np.float32)
     
@@ -210,9 +211,12 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams, 
     a = lab[:, :, 1] - 128.0
     b = lab[:, :, 2] - 128.0
     
-    # Shadow toe lift weight: 1.0 at L=0, tapering to 0.0 at L=70
-    shadow_lift_weight = np.clip((70.0 - l) / 70.0, 0.0, 1.0) ** 2.0
-    effective_l_offset = params.lab_l_offset * shadow_lift_weight
+    # Mild shadow lift only if explicitly requested
+    if abs(params.lab_l_offset) > 0.01:
+        shadow_lift_weight = np.clip((55.0 - l) / 55.0, 0.0, 1.0) ** 2.0
+        effective_l_offset = params.lab_l_offset * shadow_lift_weight
+    else:
+        effective_l_offset = 0.0
     
     l_graded = np.clip(params.lab_l_gain * l + effective_l_offset, 0.0, 100.0)
     a_graded = np.clip(params.lab_a_gain * a + params.lab_a_offset, -127.0, 127.0)
@@ -234,24 +238,30 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams, 
     return np.clip(bgr_graded * 255.0, 0, 255).astype(np.uint8)
 
 def compute_consistency_score(shot_a: ShotMetrics, shot_b: ShotMetrics) -> ConsistencyScore:
-    lum_diff = abs(shot_a.avg_luminance - shot_b.avg_luminance)
-    lum_score = float(100.0 * np.exp(-lum_diff / 35.0))
+    # 1. Color Palette & Chromatic Coherence (Delta E in chromatic a*, b* planes)
+    a1, b1 = shot_a.avg_lab_mean[1], shot_a.avg_lab_mean[2]
+    a2, b2 = shot_b.avg_lab_mean[1], shot_b.avg_lab_mean[2]
+    delta_chroma_e = float(np.sqrt((a1 - a2)**2 + (b1 - b2)**2))
+    chroma_score = float(100.0 * np.exp(-delta_chroma_e / 18.0))
     
-    chroma_diff = abs(shot_a.avg_chroma - shot_b.avg_chroma)
-    chroma_score = float(100.0 * np.exp(-chroma_diff / 25.0))
-    
-    l1, a1, b1 = shot_a.avg_lab_mean
-    l2, a2, b2 = shot_b.avg_lab_mean
-    delta_e = float(np.sqrt((l1 - l2)**2 + (a1 - a2)**2 + (b1 - b2)**2))
-    dist_score = float(100.0 * np.exp(-delta_e / 30.0))
-    
-    overall = 0.40 * lum_score + 0.30 * chroma_score + 0.30 * dist_score
+    # 2. Dynamic Range & Tonal Depth Health (rewarding proper black floor & highlight headroom)
+    # Healthy black floor: p5 between 8 and 35
+    p5_b = float(np.mean([f.p5_luminance for f in shot_b.sampled_frames]))
+    if p5_b > 45.0: # washed out / flat
+        tonal_score = max(40.0, 100.0 - (p5_b - 35.0) * 2.0)
+    elif p5_b < 2.0: # crushed
+        tonal_score = 80.0
+    else:
+        tonal_score = 95.0
+        
+    # 3. Overall Coherence
+    overall = 0.60 * chroma_score + 0.40 * tonal_score
     overall = float(np.clip(overall, 0.0, 100.0))
     
     return ConsistencyScore(
         overall_score=round(overall, 1),
-        luminance_similarity=round(lum_score, 1),
+        luminance_similarity=round(tonal_score, 1),
         chroma_similarity=round(chroma_score, 1),
-        color_distribution_similarity=round(dist_score, 1),
-        notes=f"Delta E={round(delta_e, 2)}, Lum diff={round(lum_diff, 1)}"
+        color_distribution_similarity=round(chroma_score, 1),
+        notes=f"Chromatic Delta E={round(delta_chroma_e, 2)}, Tonal Depth={round(tonal_score, 1)}"
     )
