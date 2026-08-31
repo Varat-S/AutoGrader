@@ -1,4 +1,4 @@
-﻿let currentJobId = null;
+let currentJobId = null;
 let currentJobResult = null;
 let activeShotIdx = 0;
 let pollInterval = null;
@@ -114,13 +114,15 @@ btnRun.addEventListener("click", async () => {
     document.getElementById("results-panel").style.display = "none";
     
     const refVal = refSelect.value === "auto" ? null : parseInt(refSelect.value);
+    const colorProfileVal = document.getElementById("color-profile-select").value;
     
     await fetch(`/api/jobs/${currentJobId}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             creative_prompt: promptInput.value,
-            reference_index: refVal
+            reference_index: refVal,
+            color_profile: colorProfileVal
         })
     });
     

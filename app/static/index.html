@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -70,8 +70,9 @@
                 <div class="form-group">
                     <label for="color-profile-select">Color Space Profile</label>
                     <select id="color-profile-select" class="form-control">
-                        <option value="Rec.709" selected>Rec.709 / Standard</option>
-                        <option value="Log" selected>Log Profile (Auto-detected by Gemini)</option>
+                        <option value="auto" selected>Auto-detect (Auto CST for Log or Rec.709)</option>
+                        <option value="Log">DJI D-Log / S-Log3 / Apple Log (Log CST)</option>
+                        <option value="Rec.709">Standard Rec.709</option>
                     </select>
                 </div>
 

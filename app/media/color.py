@@ -1,6 +1,6 @@
 ﻿import numpy as np
 import cv2
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from app.models.analysis import FrameMetrics, ShotMetrics
 from app.models.grade import ColorGradeParams, ConsistencyScore
 
@@ -103,6 +103,30 @@ def aggregate_shot_metrics(
         dominant_cast=cast
     )
 
+def is_log_profile(metrics: ShotMetrics) -> bool:
+    # Characteristic of flat log video: black level lifted > 40/255 and low chroma < 12
+    p5_avg = float(np.mean([f.p5_luminance for f in metrics.sampled_frames]))
+    return (p5_avg > 38.0 and metrics.avg_chroma < 12.0)
+
+def apply_log_to_rec709_cst(bgr_float: np.ndarray, log_type: str = "auto") -> np.ndarray:
+    # 1. Expand flat black floor
+    black_floor = 0.095
+    white_ceil = 0.92
+    
+    img_clamped = np.clip(bgr_float, black_floor, 1.0)
+    expanded = (img_clamped - black_floor) / (white_ceil - black_floor)
+    
+    # 2. De-log S-Curve mapping to Rec.709
+    gamma_corrected = np.power(np.clip(expanded, 0.0, 1.0), 1.55)
+    
+    # 3. Gamut expansion (restore wide gamut color in Rec.709)
+    uint8_img = (np.clip(gamma_corrected, 0.0, 1.0) * 255.0).astype(np.uint8)
+    hsv = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.85, 0.0, 255.0)
+    rec709_bgr = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
+    
+    return np.clip(rec709_bgr, 0.0, 1.0)
+
 def calculate_deterministic_match_params(
     reference: ShotMetrics,
     target: ShotMetrics,
@@ -145,15 +169,19 @@ def calculate_deterministic_match_params(
         lab_b_offset=round(b_offset, 3)
     )
 
-def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) -> np.ndarray:
+def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams, is_log: bool = False) -> np.ndarray:
     # 1. Floating-point working representation [0, 1]
     img = np.clip(bgr_frame.astype(np.float32) / 255.0, 0.0, 1.0)
     
-    # 2. Exposure
+    # 2. Apply Log -> Rec.709 Color Space Transform if input is Log
+    if is_log:
+        img = apply_log_to_rec709_cst(img)
+    
+    # 3. Exposure
     if abs(params.exposure_ev) > 0.01:
         img = img * float(2.0 ** params.exposure_ev)
         
-    # 3. Filmic Contrast & Tone Curve around pivot
+    # 4. Filmic Contrast & Tone Curve around pivot
     if abs(params.contrast - 1.0) > 0.01:
         x_norm = np.clip(img, 0.0, 1.0)
         p = float(np.clip(params.pivot, 0.05, 0.95))
@@ -162,7 +190,7 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
         above = 1.0 - (1.0 - p) * (np.maximum(0.0, (1.0 - x_norm) / (1.0 - p)) ** c)
         img = np.where(x_norm < p, below, above)
         
-    # 4. White balance (Temperature / Tint)
+    # 5. White balance (Temperature / Tint)
     if abs(params.temperature) > 0.1 or abs(params.tint) > 0.1:
         temp_f = params.temperature / 150.0
         tint_f = params.tint / 150.0
@@ -170,11 +198,11 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
         img[:, :, 0] = img[:, :, 0] * (1.0 - temp_f) # Blue
         img[:, :, 1] = img[:, :, 1] * (1.0 - tint_f) # Green
 
-    # 5. Filmic Highlight Protection Shoulder (prevents hard clipping in highlights & foam)
+    # 6. Filmic Highlight Protection Shoulder (prevents hard clipping in highlights & foam)
     img = np.where(img > 0.80, 0.80 + (img - 0.80) / (1.0 + (img - 0.80) * 2.2), img)
     img = np.clip(img, 0.0, 1.0)
     
-    # 6. CIELAB Perceptual Alignment with Tapered Shadow Lift
+    # 7. CIELAB Perceptual Alignment with Tapered Shadow Lift
     uint8_img = (img * 255.0).astype(np.uint8)
     lab = cv2.cvtColor(uint8_img, cv2.COLOR_BGR2LAB).astype(np.float32)
     
@@ -197,7 +225,7 @@ def apply_color_grade_to_frame(bgr_frame: np.ndarray, params: ColorGradeParams) 
     
     bgr_graded = cv2.cvtColor(np.clip(lab_out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32) / 255.0
     
-    # 7. Saturation in HSV space
+    # 8. Saturation in HSV space
     if abs(params.saturation - 1.0) > 0.01:
         hsv = cv2.cvtColor((np.clip(bgr_graded, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * params.saturation, 0.0, 255.0)

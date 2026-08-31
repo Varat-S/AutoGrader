@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -11,6 +11,7 @@ from app.tools.research import research_cinematography_principles, synthesize_cr
 from app.tools.calculate_grade import calculate_creative_grade
 from app.tools.render import render_grade
 from app.tools.evaluate import evaluate_grade
+from app.media.color import is_log_profile
 
 class AutonomousColoristAgent:
     def __init__(self, work_dir: str = "output"):
@@ -22,6 +23,7 @@ class AutonomousColoristAgent:
         video_paths: List[str],
         creative_prompt: str,
         reference_index: Optional[int] = None,
+        color_profile: str = "auto",
         job_id: str = "job_default",
         progress_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
@@ -34,8 +36,8 @@ class AutonomousColoristAgent:
                 
         log_event(f"Starting Autonomous Colorist job '{job_id}' with {len(video_paths)} clips.")
         
-        # 1. PERCEIVE: Single Batched Multimodal Video Inspection with Gemini (1 API call)
-        log_event("Inspecting footage semantics with Gemini 3.6 Flash...")
+        # 1. PERCEIVE: Single Batched Multimodal Video Inspection with Gemini
+        log_event("Inspecting footage semantics with Gemini 3.5 Flash...")
         inspection_result = inspect_all_shots_batched(video_paths)
         semantic_analyses = inspection_result.shots
         is_continuous_sequence = (inspection_result.scene_relationship == "continuous_sequence")
@@ -62,10 +64,24 @@ class AutonomousColoristAgent:
         # 2. MEASURE: Extract numerical color statistics with OpenCV
         log_event("Measuring numerical color distributions in CIELAB space...")
         shot_metrics: List[ShotMetrics] = []
+        is_log_flags: List[bool] = []
+        
         for i, path in enumerate(video_paths):
             shot_id = f"shot_{chr(65 + i)}"
             metrics = measure_shot_color(path, shot_id=shot_id)
             shot_metrics.append(metrics)
+            
+            # Check for Log profile (User selected or auto-detected by histogram & Gemini)
+            shot_is_log = (
+                color_profile == "Log" or
+                color_profile == "dlog" or
+                color_profile == "slog" or
+                is_log_profile(metrics) or
+                "log" in semantic_analyses[i].scene_description.lower()
+            )
+            is_log_flags.append(shot_is_log)
+            if shot_is_log:
+                log_event(f"  [CST] Log profile detected for {shot_id}. Color Space Transform (CST -> Rec.709) ACTIVE.")
             
         ref_metrics = shot_metrics[ref_idx]
         
@@ -92,6 +108,7 @@ class AutonomousColoristAgent:
             shot_id = f"shot_{chr(65 + i)}"
             metrics = shot_metrics[i]
             semantic = semantic_analyses[i]
+            shot_is_log = is_log_flags[i]
             is_ref = (i == ref_idx)
             is_same_scene = is_continuous_sequence or (
                 not is_ref and
@@ -122,37 +139,38 @@ class AutonomousColoristAgent:
                 is_same_scene=is_same_scene
             )
             
-            # Render Preview
+            # Render Preview with Log CST
             preview_lut = str(self.work_dir / f"{job_id}_{shot_id}_preview.cube")
             preview_video = str(self.work_dir / f"{job_id}_{shot_id}_preview.mp4")
             log_event(f"Rendering preview for {shot_id}...")
-            render_grade(path, params, preview_video, preview_lut, is_preview=True)
+            render_grade(path, params, preview_video, preview_lut, is_preview=True, is_log=shot_is_log)
             
             # Evaluate Preview
             eval_metrics, after_score = evaluate_grade(ref_metrics, preview_video)
             log_event(f"{shot_id} consistency: {after_score.overall_score}/100.")
             
-            # Render Final Full-Quality Master
+            # Render Final Full-Quality Master with Log CST
             final_lut = str(self.work_dir / f"{job_id}_{shot_id}_grade.cube")
             final_video = str(self.work_dir / f"{job_id}_{shot_id}_graded.mp4")
             log_event(f"Rendering final master video & 3D LUT for {shot_id}...")
-            render_grade(path, params, final_video, final_lut, is_preview=False)
+            render_grade(path, params, final_video, final_lut, is_preview=False, is_log=shot_is_log)
             
+            log_desc = "Log -> Rec.709 CST applied. " if shot_is_log else ""
             if is_ref:
                 explanation = (
-                    f"Master technical reference. Applied creative '{creative_spec.look_title}' film stock emulation "
+                    f"Master technical reference. {log_desc}Applied creative '{creative_spec.look_title}' film stock emulation "
                     f"(Contrast: {creative_spec.contrast_intent}x, Saturation: {creative_spec.saturation_intent}x). "
                     f"{'Preserved natural skin tones. ' if skin_prot else ''}"
                 )
             elif is_same_scene:
                 explanation = (
-                    f"Continuous scene match to {ref_shot_id} with unified '{creative_spec.look_title}' style. "
+                    f"Continuous scene match to {ref_shot_id}. {log_desc}Applied unified '{creative_spec.look_title}' style. "
                     f"{'Protected skin tones. ' if skin_prot else ''}"
                     f"Consistency score: {after_score.overall_score}/100."
                 )
             else:
                 explanation = (
-                    f"Scene-aware film emulation ({semantic.lighting_environment}). Preserved natural scene exposure "
+                    f"Scene-aware film emulation ({semantic.lighting_environment}). {log_desc}Preserved natural scene exposure "
                     f"while harmonizing color palette and applying '{creative_spec.look_title}' style. "
                     f"{'Protected skin tones. ' if skin_prot else ''}"
                 )

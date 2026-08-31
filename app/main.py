@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 import uuid
 import threading
@@ -36,9 +36,9 @@ jobs: Dict[str, Dict[str, Any]] = {}
 class RunJobRequest(BaseModel):
     creative_prompt: str
     reference_index: Optional[int] = None
-    color_profile: str = "Rec.709"
+    color_profile: str = "auto"
 
-def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int]):
+def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int], color_profile: str = "auto"):
     job = jobs[job_id]
     job["state"] = "running"
     job["progress"] = 10
@@ -65,6 +65,7 @@ def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int]):
             video_paths=source_paths,
             creative_prompt=prompt,
             reference_index=ref_idx,
+            color_profile=color_profile,
             job_id=job_id,
             progress_callback=on_progress
         )
@@ -154,7 +155,7 @@ def start_job(job_id: str, req: RunJobRequest, background_tasks: BackgroundTasks
         raise HTTPException(status_code=400, detail="Job is already running")
         
     job["events"].append(f"Starting grading workflow with creative prompt: '{req.creative_prompt}'")
-    background_tasks.add_task(run_agent_task, job_id, req.creative_prompt, req.reference_index)
+    background_tasks.add_task(run_agent_task, job_id, req.creative_prompt, req.reference_index, req.color_profile)
     return {"status": "started", "job_id": job_id}
 
 @app.get("/api/jobs/{job_id}")

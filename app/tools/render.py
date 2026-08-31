@@ -10,12 +10,13 @@ def render_grade(
     output_video_path: str,
     output_lut_path: str,
     lut_size: int = 33,
-    is_preview: bool = False
+    is_preview: bool = False,
+    is_log: bool = False
 ) -> Tuple[str, str]:
-    # 1. Bake 3D LUT
-    generate_3d_cube_lut(params, output_lut_path, size=lut_size)
+    # 1. Bake 3D LUT (with Log CST if applicable)
+    generate_3d_cube_lut(params, output_lut_path, size=lut_size, is_log=is_log)
     
-    # 2. Render with FFmpeg (fast preset for previews)
+    # 2. Render with FFmpeg
     preset = "veryfast" if is_preview else "medium"
     crf = 22 if is_preview else 18
     apply_lut_and_render(source_video_path, output_lut_path, output_video_path, preset=preset, crf=crf)
