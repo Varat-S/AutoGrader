@@ -108,22 +108,25 @@ Return strictly conforming JSON matching the schema.
         temperature=0.2,
     )
 
-    for attempt in range(max_retries):
-        try:
-            response = genai_client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt,
-                config=config,
-            )
-            data = json.loads(response.text)
-            data["citations"] = [s.model_dump() for s in research_result.sources]
-            return CreativeSpecification(**data)
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                wait_time = 15 * (attempt + 1)
-                print(f"[Gemini] Rate limit hit during synthesis. Waiting {wait_time}s before retry (attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait_time)
-            else:
-                raise e
-                
-    raise RuntimeError("Gemini API rate limit exceeded during synthesis. Please wait 30 seconds.")
+    models_to_try = ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]
+
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                response = genai_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=config,
+                )
+                data = json.loads(response.text)
+                data["citations"] = [s.model_dump() for s in research_result.sources]
+                return CreativeSpecification(**data)
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    wait_time = 5 * (attempt + 1)
+                    print(f"[{model_name}] Rate limit hit during synthesis. Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                else:
+                    break
+                    
+    raise RuntimeError("Gemini API is currently rate limited. Please retry in a few seconds.")
