@@ -113,11 +113,19 @@ async def upload_videos(job_id: str, files: List[UploadFile] = File(...)):
         dest_path = job_source_dir / safe_filename
         with open(dest_path, "wb") as buffer:
             shutil.copyfileobj(f.file, buffer)
-        uploaded_paths.append(str(dest_path))
+        dest_str = str(dest_path)
+        if dest_str not in job["source_videos"]:
+            job["source_videos"].append(dest_str)
+        uploaded_paths.append(dest_str)
         
-    job["source_videos"].extend(uploaded_paths)
+    all_filenames = [Path(p).name for p in job["source_videos"]]
     job["events"].append(f"Uploaded {len(files)} video clips: {', '.join([Path(p).name for p in uploaded_paths])}.")
-    return {"status": "success", "uploaded": len(uploaded_paths), "total_videos": len(job["source_videos"])}
+    return {
+        "status": "success",
+        "uploaded": [Path(p).name for p in uploaded_paths],
+        "all_clips": all_filenames,
+        "total_videos": len(all_filenames)
+    }
 
 @app.post("/api/jobs/{job_id}/load_demo")
 def load_demo_footage(job_id: str):
@@ -140,7 +148,8 @@ def load_demo_footage(job_id: str):
             
     job["source_videos"] = loaded_paths
     job["events"].append("Loaded 3 demo video clips (Reference, Underexposed, Warm Cast).")
-    return {"status": "success", "loaded": [Path(p).name for p in loaded_paths]}
+    all_filenames = [Path(p).name for p in loaded_paths]
+    return {"status": "success", "loaded": all_filenames, "all_clips": all_filenames}
 
 @app.post("/api/jobs/{job_id}/run")
 def start_job(job_id: str, req: RunJobRequest, background_tasks: BackgroundTasks):

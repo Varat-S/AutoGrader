@@ -172,11 +172,60 @@
             <div id="creative-spec-card" class="spec-card"></div>
 
             <div class="shot-tabs-header">
-                <span class="tabs-label">Select Shot:</span>
-                <div id="shot-tabs" class="shot-tabs"></div>
+                <div class="shot-tabs-left">
+                    <span class="tabs-label">Select Shot:</span>
+                    <div id="shot-tabs" class="shot-tabs"></div>
+                </div>
+                <div class="view-mode-toggle">
+                    <button id="btn-view-slider" class="view-btn active" title="Interactive Split Wipe">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line></svg>
+                        Split Slider
+                    </button>
+                    <button id="btn-view-side" class="view-btn" title="Side by Side Comparison">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="9" height="16" rx="1"></rect><rect x="13" y="4" width="9" height="16" rx="1"></rect></svg>
+                        Side by Side
+                    </button>
+                </div>
             </div>
 
-            <div class="video-comparison-grid">
+            <!-- 1. INTERACTIVE SPLIT SLIDER VIEW (DEFAULT) -->
+            <div id="comparison-slider-view" class="comparison-slider-container">
+                <div class="slider-video-wrapper" id="slider-frame">
+                    <!-- Underneath: Before (Source) -->
+                    <video id="player-slider-before" class="slider-video" playsinline loop muted></video>
+                    
+                    <!-- Overlay with dynamic clip-path: After (Graded) -->
+                    <div id="slider-after-clip" class="slider-after-clip">
+                        <video id="player-slider-after" class="slider-video" playsinline loop muted></video>
+                    </div>
+                    
+                    <!-- Draggable Divider -->
+                    <div id="split-slider-divider" class="split-slider-divider" style="left: 50%;">
+                        <div class="split-slider-line"></div>
+                        <div class="split-slider-handle">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                        </div>
+                    </div>
+                    
+                    <!-- Corner Badges -->
+                    <div class="slider-badge badge-left">Graded Master (After)</div>
+                    <div class="slider-badge badge-right">Original Source (Before)</div>
+                </div>
+                
+                <!-- Unified Synchronized Video Playback Bar -->
+                <div class="slider-playback-bar">
+                    <button id="btn-slider-play" class="btn-play-pause" title="Play / Pause (Space)">
+                        <svg id="icon-play" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+                        <svg id="icon-pause" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                    </button>
+                    <input type="range" id="slider-timeline" class="slider-timeline" min="0" max="100" value="0" step="0.1">
+                    <span id="slider-time-display" class="slider-time-display">0:00 / 0:00</span>
+                </div>
+            </div>
+
+            <!-- 2. SIDE BY SIDE VIEW (OPTIONAL TOGGLE) -->
+            <div id="side-by-side-view" class="video-comparison-grid" style="display: none;">
                 <div class="video-card">
                     <div class="video-card-header">
                         <span class="video-tag tag-before">Source (Before)</span>

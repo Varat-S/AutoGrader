@@ -1,4 +1,4 @@
-﻿:root {
+:root {
     --bg-page: #f8fafc;
     --bg-surface: #ffffff;
     --bg-subtle: #f1f5f9;
@@ -386,6 +386,13 @@ body {
     background-color: var(--accent-dark);
     border-color: var(--accent-dark);
     color: #ffffff;
+    animation: step-pulse 1.8s infinite ease-in-out;
+}
+
+@keyframes step-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(15, 23, 42, 0.4); }
+    70% { box-shadow: 0 0 0 6px rgba(15, 23, 42, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(15, 23, 42, 0); }
 }
 
 .step-item.active .step-label {
@@ -397,6 +404,7 @@ body {
     background-color: var(--accent-emerald);
     border-color: var(--accent-emerald);
     color: #ffffff;
+    transition: all 0.3s ease;
 }
 
 .step-item.done .step-label {
@@ -423,7 +431,16 @@ body {
 .progress-fill {
     height: 100%;
     background-color: var(--accent-dark);
-    transition: width 0.3s ease;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.panel {
+    animation: panel-fade-in 0.3s ease-out;
+}
+
+@keyframes panel-fade-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 .status-badge {
@@ -509,8 +526,16 @@ body {
 .shot-tabs-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 0.75rem;
     margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.shot-tabs-left {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
 }
 
 .tabs-label {
@@ -534,6 +559,12 @@ body {
     cursor: pointer;
     font-size: 0.8rem;
     font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.shot-tab:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 .shot-tab.active {
@@ -542,7 +573,209 @@ body {
     color: #ffffff;
 }
 
-/* VIDEO COMPARISON */
+.view-mode-toggle {
+    display: flex;
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+}
+
+.view-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: transparent;
+    border: none;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.view-btn.active {
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    font-weight: 600;
+}
+
+/* INTERACTIVE SPLIT SLIDER */
+.comparison-slider-container {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.slider-video-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background-color: #000000;
+    overflow: hidden;
+    cursor: ew-resize;
+    user-select: none;
+}
+
+.slider-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.slider-after-clip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    clip-path: polygon(0 0, 50% 0, 50% 100%, 0 100%);
+    pointer-events: none;
+}
+
+.split-slider-divider {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    z-index: 10;
+    pointer-events: none;
+}
+
+.split-slider-line {
+    width: 2px;
+    height: 100%;
+    background-color: #ffffff;
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.6);
+}
+
+.split-slider-handle {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background-color: #ffffff;
+    color: #0f172a;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slider-video-wrapper:hover .split-slider-handle,
+.slider-video-wrapper.dragging .split-slider-handle {
+    transform: translate(-50%, -50%) scale(1.12);
+}
+
+.slider-badge {
+    position: absolute;
+    top: 12px;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.725rem;
+    font-weight: 600;
+    z-index: 15;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+}
+
+.badge-left {
+    left: 12px;
+    background-color: rgba(5, 150, 105, 0.85);
+    color: #ffffff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.badge-right {
+    right: 12px;
+    background-color: rgba(15, 23, 42, 0.8);
+    color: #ffffff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* PLAYBACK BAR */
+.slider-playback-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.65rem 1rem;
+    background-color: var(--bg-subtle);
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-play-pause {
+    background-color: var(--accent-dark);
+    color: #ffffff;
+    border: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.1s ease, background-color 0.15s ease;
+    flex-shrink: 0;
+}
+
+.btn-play-pause:hover {
+    background-color: #1e293b;
+    transform: scale(1.05);
+}
+
+.slider-timeline {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 9999px;
+    outline: none;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.slider-timeline::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-dark);
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    transition: transform 0.1s ease;
+}
+
+.slider-timeline::-webkit-slider-thumb:hover {
+    transform: scale(1.3);
+}
+
+.slider-time-display {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    min-width: 80px;
+    text-align: right;
+}
+
+/* SIDE BY SIDE */
 .video-comparison-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -1,134 +1,178 @@
-let currentJobId = null;
-let currentJobResult = null;
-let activeShotIdx = 0;
-let pollInterval = null;
+// AutoGrader — Autonomous Multimodal Colorist Studio
 
+let currentJobId = null;
+let pollInterval = null;
+let isDraggingSlider = false;
+
+// DOM Elements
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
-const clipsList = document.getElementById("clips-list");
 const btnLoadDemo = document.getElementById("btn-load-demo");
-const btnRun = document.getElementById("btn-run");
-const promptInput = document.getElementById("creative-prompt");
+const clipsList = document.getElementById("clips-list");
 const refSelect = document.getElementById("ref-shot-select");
+const colorSelect = document.getElementById("color-profile-select");
+const promptInput = document.getElementById("creative-prompt");
+const btnRun = document.getElementById("btn-run");
+const promptChips = document.querySelectorAll(".chip");
 
-// 1. SETUP & CLIPS
-async function ensureJob() {
-    if (!currentJobId) {
+// Split Slider DOM Elements
+const sliderFrame = document.getElementById("slider-frame");
+const sliderDivider = document.getElementById("split-slider-divider");
+const sliderAfterClip = document.getElementById("slider-after-clip");
+const playerSliderBefore = document.getElementById("player-slider-before");
+const playerSliderAfter = document.getElementById("player-slider-after");
+const btnSliderPlay = document.getElementById("btn-slider-play");
+const iconPlay = document.getElementById("icon-play");
+const iconPause = document.getElementById("icon-pause");
+const sliderTimeline = document.getElementById("slider-timeline");
+const sliderTimeDisplay = document.getElementById("slider-time-display");
+
+// View Mode DOM Elements
+const btnViewSlider = document.getElementById("btn-view-slider");
+const btnViewSide = document.getElementById("btn-view-side");
+const comparisonSliderView = document.getElementById("comparison-slider-view");
+const sideBySideView = document.getElementById("side-by-side-view");
+
+// INITIALIZE APP
+document.addEventListener("DOMContentLoaded", () => {
+    initJob();
+    setupEventListeners();
+    initComparisonSlider();
+    initViewModeToggle();
+});
+
+async function initJob() {
+    try {
         const res = await fetch("/api/jobs", { method: "POST" });
         const data = await res.json();
         currentJobId = data.job_id;
+        console.log("Initialized job:", currentJobId);
+    } catch (e) {
+        console.error("Failed to initialize job:", e);
     }
-    return currentJobId;
 }
 
-// Preset chips click handler
-document.querySelectorAll(".chip").forEach(chip => {
-    chip.addEventListener("click", () => {
-        promptInput.value = chip.getAttribute("data-prompt");
+function setupEventListeners() {
+    // Dropzone
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+        if (e.dataTransfer.files.length > 0) uploadFiles(e.dataTransfer.files);
     });
-});
-
-// Drag & Drop
-dropzone.addEventListener("click", () => fileInput.click());
-dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
-dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
-dropzone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropzone.classList.remove("dragover");
-    if (e.dataTransfer.files.length > 0) {
-        handleUpload(e.dataTransfer.files);
-    }
-});
-
-fileInput.addEventListener("change", (e) => {
-    if (e.target.files.length > 0) {
-        handleUpload(e.target.files);
-    }
-});
-
-async function handleUpload(files) {
-    const jobId = await ensureJob();
-    const formData = new FormData();
-    for (let f of files) {
-        formData.append("files", f);
-    }
-    
-    clipsList.innerHTML = `<div class="empty-state">Uploading ${files.length} video clips...</div>`;
-    const res = await fetch(`/api/jobs/${jobId}/upload`, {
-        method: "POST",
-        body: formData
+    fileInput.addEventListener("change", () => {
+        if (fileInput.files.length > 0) uploadFiles(fileInput.files);
     });
-    const data = await res.json();
-    fetchJobDetails(jobId);
-}
 
-btnLoadDemo.addEventListener("click", async () => {
-    const jobId = await ensureJob();
-    btnLoadDemo.disabled = true;
-    btnLoadDemo.innerText = "Loading Demo...";
-    
-    const res = await fetch(`/api/jobs/${jobId}/load_demo`, { method: "POST" });
-    const data = await res.json();
-    
-    btnLoadDemo.disabled = false;
-    btnLoadDemo.innerText = "⚡ Load Demo Sequence (3 Shots)";
-    fetchJobDetails(jobId);
-});
+    // Load Demo Footage
+    btnLoadDemo.addEventListener("click", async () => {
+        if (!currentJobId) await initJob();
+        btnLoadDemo.disabled = true;
+        btnLoadDemo.innerText = "Loading demo clips...";
+        try {
+            const res = await fetch(`/api/jobs/${currentJobId}/load_demo`, { method: "POST" });
+            const data = await res.json();
+            updateClipsList(data.loaded);
+            btnRun.disabled = false;
+        } catch (e) {
+            console.error("Demo load failed:", e);
+        } finally {
+            btnLoadDemo.disabled = false;
+            btnLoadDemo.innerText = "Load Demo Sequence (3 Shots)";
+        }
+    });
 
-async function fetchJobDetails(jobId) {
-    const res = await fetch(`/api/jobs/${jobId}`);
-    const job = await res.json();
-    
-    if (job.source_videos && job.source_videos.length > 0) {
-        clipsList.innerHTML = "";
-        refSelect.innerHTML = `<option value="auto">✨ Auto-detect Best Reference Shot (Gemini)</option>`;
+    // Aesthetic Presets
+    promptChips.forEach(chip => {
+        chip.addEventListener("click", () => {
+            promptInput.value = chip.getAttribute("data-prompt");
+            promptInput.focus();
+        });
+    });
+
+    // Run Workflow
+    btnRun.addEventListener("click", async () => {
+        if (!currentJobId) return;
+        btnRun.disabled = true;
+        document.getElementById("agent-activity-panel").style.display = "block";
+        document.getElementById("results-panel").style.display = "none";
         
-        job.source_videos.forEach((path, idx) => {
-            const name = path.split("/").pop().split("\\").pop();
-            const tag = `Shot ${String.fromCharCode(65 + idx)}`;
-            
-            const row = document.createElement("div");
-            row.className = "clip-row";
-            row.innerHTML = `
-                <span><strong>${tag}</strong>: ${name}</span>
-                <span class="clip-tag">${idx === 0 ? "Shot A" : "Shot " + String.fromCharCode(65 + idx)}</span>
-            `;
-            clipsList.appendChild(row);
-            
-            const opt = document.createElement("option");
-            opt.value = idx;
-            opt.innerText = `${tag}: ${name}`;
-            refSelect.appendChild(opt);
+        const refVal = refSelect.value === "auto" ? null : parseInt(refSelect.value);
+        const colorProfileVal = colorSelect.value;
+        
+        await fetch(`/api/jobs/${currentJobId}/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                creative_prompt: promptInput.value,
+                reference_index: refVal,
+                color_profile: colorProfileVal
+            })
         });
         
-        btnRun.disabled = false;
+        startPolling(currentJobId);
+    });
+}
+
+// FILE UPLOAD
+async function uploadFiles(files) {
+    if (!currentJobId) await initJob();
+    const formData = new FormData();
+    for (let i = 0; i < files.length; i++) {
+        formData.append("files", files[i]);
+    }
+    
+    try {
+        const res = await fetch(`/api/jobs/${currentJobId}/upload`, {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+        const clips = data.all_clips || data.loaded || (Array.isArray(data.uploaded) ? data.uploaded : []);
+        updateClipsList(clips);
+        btnRun.disabled = (clips.length === 0);
+    } catch (e) {
+        console.error("Upload error:", e);
     }
 }
 
-// 2. RUN WORKFLOW
-btnRun.addEventListener("click", async () => {
-    if (!currentJobId) return;
+function updateClipsList(filenames) {
+    if (!Array.isArray(filenames)) {
+        console.warn("Expected array of filenames, got:", filenames);
+        filenames = [];
+    }
     
-    btnRun.disabled = true;
-    document.getElementById("agent-activity-panel").style.display = "block";
-    document.getElementById("results-panel").style.display = "none";
+    clipsList.innerHTML = "";
+    refSelect.innerHTML = '<option value="auto" selected>Auto-detect Optimal Reference Shot (Gemini)</option>';
     
-    const refVal = refSelect.value === "auto" ? null : parseInt(refSelect.value);
-    const colorProfileVal = document.getElementById("color-profile-select").value;
+    if (filenames.length === 0) {
+        clipsList.innerHTML = '<div class="empty-state">No clips loaded yet. Drop files above or load the demo sequence.</div>';
+        btnRun.disabled = true;
+        return;
+    }
     
-    await fetch(`/api/jobs/${currentJobId}/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            creative_prompt: promptInput.value,
-            reference_index: refVal,
-            color_profile: colorProfileVal
-        })
+    filenames.forEach((fname, idx) => {
+        const shotId = `shot_${String.fromCharCode(65 + idx)}`;
+        const row = document.createElement("div");
+        row.className = "clip-row";
+        row.innerHTML = `
+            <span><strong>${shotId}</strong>: ${fname}</span>
+            <span class="clip-tag">${fname.endsWith(".MP4") || fname.endsWith(".mp4") ? "MP4" : "MOV"}</span>
+        `;
+        clipsList.appendChild(row);
+        
+        const opt = document.createElement("option");
+        opt.value = idx;
+        opt.innerText = `Shot ${String.fromCharCode(65 + idx)} (${fname})`;
+        refSelect.appendChild(opt);
     });
     
-    startPolling(currentJobId);
-});
+    btnRun.disabled = false;
+}
 
+// POLLING & ACTIVITY FEED
 function startPolling(jobId) {
     if (pollInterval) clearInterval(pollInterval);
     
@@ -136,38 +180,38 @@ function startPolling(jobId) {
         const res = await fetch(`/api/jobs/${jobId}`);
         const job = await res.json();
         
-        updateAgentUI(job);
+        updateActivityFeed(job);
         
         if (job.state === "completed") {
             clearInterval(pollInterval);
-            currentJobResult = job.result;
+            btnRun.disabled = false;
             renderResults(job.result, job.source_videos);
         } else if (job.state === "failed") {
             clearInterval(pollInterval);
-            alert("Error during agent processing: " + (job.error || "Unknown error"));
+            btnRun.disabled = false;
+            document.getElementById("agent-status-badge").innerText = "Failed";
+            document.getElementById("agent-status-badge").className = "status-badge badge-running";
         }
-    }, 1000);
+    }, 1500);
 }
 
-function updateAgentUI(job) {
+function updateActivityFeed(job) {
     document.getElementById("progress-fill").style.width = `${job.progress}%`;
-    
-    // Log feed
     const logFeed = document.getElementById("log-feed");
     logFeed.innerHTML = "";
-    job.events.forEach(ev => {
-        const div = document.createElement("div");
-        div.className = "log-line";
-        if (ev.includes("Gemini")) div.classList.add("gemini");
-        if (ev.includes("Parallel")) div.classList.add("parallel");
-        if (ev.includes("CIELAB") || ev.includes("Measuring")) div.classList.add("cv");
-        if (ev.includes("revision") || ev.includes("Revised")) div.classList.add("revise");
-        div.innerText = `> ${ev}`;
-        logFeed.appendChild(div);
+    
+    job.events.forEach(evt => {
+        const line = document.createElement("div");
+        line.className = "log-line";
+        if (evt.includes("Gemini")) line.classList.add("gemini");
+        else if (evt.includes("Parallel")) line.classList.add("parallel");
+        else if (evt.includes("CIELAB") || evt.includes("LUT")) line.classList.add("cv");
+        else if (evt.includes("Revise") || evt.includes("evaluate")) line.classList.add("revise");
+        line.innerText = evt;
+        logFeed.appendChild(line);
     });
     logFeed.scrollTop = logFeed.scrollHeight;
-    
-    // Stepper states
+
     const steps = [
         { id: "step-perceive", threshold: 20 },
         { id: "step-research", threshold: 40 },
@@ -189,7 +233,143 @@ function updateAgentUI(job) {
     });
 }
 
-// 3. RENDER RESULTS
+// -------------------------------------------------------------
+// INTERACTIVE SPLIT SLIDER & SYNCHRONIZED PLAYBACK ENGINE
+// -------------------------------------------------------------
+function initComparisonSlider() {
+    function setSliderPosition(clientX) {
+        if (!sliderFrame) return;
+        const rect = sliderFrame.getBoundingClientRect();
+        let posX = clientX - rect.left;
+        posX = Math.max(0, Math.min(posX, rect.width));
+        const pct = (posX / rect.width) * 100;
+        
+        sliderDivider.style.left = `${pct}%`;
+        sliderAfterClip.style.clipPath = `polygon(0 0, ${pct}% 0, ${pct}% 100%, 0 100%)`;
+    }
+
+    // Mouse Events
+    sliderFrame.addEventListener("mousedown", (e) => {
+        isDraggingSlider = true;
+        sliderFrame.classList.add("dragging");
+        setSliderPosition(e.clientX);
+    });
+
+    window.addEventListener("mousemove", (e) => {
+        if (isDraggingSlider) setSliderPosition(e.clientX);
+    });
+
+    window.addEventListener("mouseup", () => {
+        if (isDraggingSlider) {
+            isDraggingSlider = false;
+            sliderFrame.classList.remove("dragging");
+        }
+    });
+
+    // Touch Events
+    sliderFrame.addEventListener("touchstart", (e) => {
+        if (e.touches.length > 0) {
+            isDraggingSlider = true;
+            sliderFrame.classList.add("dragging");
+            setSliderPosition(e.touches[0].clientX);
+        }
+    }, { passive: true });
+
+    window.addEventListener("touchmove", (e) => {
+        if (isDraggingSlider && e.touches.length > 0) {
+            setSliderPosition(e.touches[0].clientX);
+        }
+    }, { passive: true });
+
+    window.addEventListener("touchend", () => {
+        if (isDraggingSlider) {
+            isDraggingSlider = false;
+            sliderFrame.classList.remove("dragging");
+        }
+    });
+
+    // Synchronized Video Playback Controls
+    btnSliderPlay.addEventListener("click", toggleSliderPlayback);
+    sliderFrame.addEventListener("click", (e) => {
+        // Toggle play if click was not a drag
+        if (!isDraggingSlider) toggleSliderPlayback();
+    });
+
+    function toggleSliderPlayback(e) {
+        if (e) e.stopPropagation();
+        if (playerSliderBefore.paused) {
+            playerSliderBefore.play();
+            playerSliderAfter.play();
+            iconPlay.style.display = "none";
+            iconPause.style.display = "block";
+        } else {
+            playerSliderBefore.pause();
+            playerSliderAfter.pause();
+            iconPlay.style.display = "block";
+            iconPause.style.display = "none";
+        }
+    }
+
+    // Scrubbing Timeline
+    playerSliderBefore.addEventListener("timeupdate", () => {
+        if (playerSliderBefore.duration) {
+            const pct = (playerSliderBefore.currentTime / playerSliderBefore.duration) * 100;
+            sliderTimeline.value = pct;
+            sliderTimeDisplay.innerText = `${formatTime(playerSliderBefore.currentTime)} / ${formatTime(playerSliderBefore.duration)}`;
+            
+            // Keep after video frame-locked in sync
+            if (Math.abs(playerSliderAfter.currentTime - playerSliderBefore.currentTime) > 0.08) {
+                playerSliderAfter.currentTime = playerSliderBefore.currentTime;
+            }
+        }
+    });
+
+    sliderTimeline.addEventListener("input", () => {
+        if (playerSliderBefore.duration) {
+            const targetTime = (sliderTimeline.value / 100) * playerSliderBefore.duration;
+            playerSliderBefore.currentTime = targetTime;
+            playerSliderAfter.currentTime = targetTime;
+        }
+    });
+
+    // Keyboard Space shortcut
+    window.addEventListener("keydown", (e) => {
+        if (e.code === "Space" && document.activeElement.tagName !== "TEXTAREA" && document.activeElement.tagName !== "INPUT") {
+            e.preventDefault();
+            toggleSliderPlayback();
+        }
+    });
+}
+
+function formatTime(seconds) {
+    if (isNaN(seconds)) return "0:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
+// -------------------------------------------------------------
+// VIEW MODE TOGGLE (SPLIT SLIDER vs SIDE BY SIDE)
+// -------------------------------------------------------------
+function initViewModeToggle() {
+    btnViewSlider.addEventListener("click", () => {
+        btnViewSlider.classList.add("active");
+        btnViewSide.classList.remove("active");
+        comparisonSliderView.style.display = "block";
+        sideBySideView.style.display = "none";
+    });
+
+    btnViewSide.addEventListener("click", () => {
+        btnViewSide.classList.add("active");
+        btnViewSlider.classList.remove("active");
+        sideBySideView.style.display = "grid";
+        comparisonSliderView.style.display = "none";
+    });
+}
+
+// -------------------------------------------------------------
+// RENDER RESULTS DASHBOARD
+// -------------------------------------------------------------
 function renderResults(result, sourceVideos) {
     document.getElementById("results-panel").style.display = "block";
     document.getElementById("agent-status-badge").innerText = "Completed";
@@ -200,9 +380,9 @@ function renderResults(result, sourceVideos) {
     const specCard = document.getElementById("creative-spec-card");
     specCard.innerHTML = `
         <div class="spec-title-row">
-            <div class="spec-title">✨ Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})</div>
+            <div class="spec-title">Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})</div>
         </div>
-        <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem;">${spec.target_aesthetic}</p>
+        <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 0.5rem;">${spec.target_aesthetic}</p>
         <div class="spec-badges">
             <span class="spec-badge">Contrast: ${spec.contrast_intent}x</span>
             <span class="spec-badge">Saturation: ${spec.saturation_intent}x</span>
@@ -220,7 +400,7 @@ function renderResults(result, sourceVideos) {
         link.className = "citation-link";
         link.href = c.url || "#";
         link.target = "_blank";
-        link.innerText = `🔗 ${c.title}`;
+        link.innerText = `Source: ${c.title}`;
         citationsList.appendChild(link);
     });
     
@@ -248,7 +428,6 @@ function renderResults(result, sourceVideos) {
 function displayShotResult(res, shotIdx, sourceVideos) {
     const jobId = currentJobId;
     
-    // Source Video Path
     let sourceFilename = "source.mp4";
     if (sourceVideos && sourceVideos[shotIdx]) {
         sourceFilename = sourceVideos[shotIdx].split("/").pop().split("\\").pop();
@@ -261,11 +440,24 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     const afterVideoUrl = `/api/jobs/${jobId}/files/${gradedVideoFilename}`;
     const lutUrl = `/api/jobs/${jobId}/files/${lutFilename}`;
     
+    // Update Split Slider Players
+    playerSliderBefore.src = beforeVideoUrl;
+    playerSliderAfter.src = afterVideoUrl;
+    playerSliderBefore.currentTime = 0;
+    playerSliderAfter.currentTime = 0;
+    sliderTimeline.value = 0;
+    
+    // Reset play/pause icon
+    iconPlay.style.display = "block";
+    iconPause.style.display = "none";
+    
+    // Update Side-by-Side Players
     const playerBefore = document.getElementById("player-before");
     const playerAfter = document.getElementById("player-after");
-    
-    playerBefore.src = beforeVideoUrl;
-    playerAfter.src = afterVideoUrl;
+    if (playerBefore && playerAfter) {
+        playerBefore.src = beforeVideoUrl;
+        playerAfter.src = afterVideoUrl;
+    }
     
     document.getElementById("label-source-shot").innerText = `Source: ${res.target_shot_id} (${sourceFilename})`;
     document.getElementById("label-graded-shot").innerText = `Graded: ${res.target_shot_id}`;
@@ -284,14 +476,14 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     
     document.getElementById("explanation-text").innerText = res.explanation;
     
-    // Download Buttons with explicit shot tags
+    // Download Buttons
     const btnVid = document.getElementById("btn-download-video");
     btnVid.href = afterVideoUrl;
     btnVid.download = `${res.target_shot_id}_graded.mp4`;
-    btnVid.innerText = `⬇ Download ${res.target_shot_id} Video (.mp4)`;
+    btnVid.innerText = `Download ${res.target_shot_id} Video (.mp4)`;
     
     const btnLut = document.getElementById("btn-download-lut");
     btnLut.href = lutUrl;
     btnLut.download = `${res.target_shot_id}_grade.cube`;
-    btnLut.innerText = `⬇ Download ${res.target_shot_id} 3D LUT (.cube)`;
+    btnLut.innerText = `Download ${res.target_shot_id} 3D LUT (.cube)`;
 }
