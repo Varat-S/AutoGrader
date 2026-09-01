@@ -108,7 +108,11 @@ def probe_video(video_path: str) -> Dict[str, Any]:
         'pix_fmt': stream.get('pix_fmt', 'unknown')
     }
 
-def extract_sampled_frames(video_path: str, fractions: List[float] = [0.25, 0.50, 0.75]) -> Tuple[List[np.ndarray], List[float]]:
+def extract_sampled_frames(
+    video_path: str,
+    fractions: Optional[List[float]] = None,
+    num_samples: int = 6
+) -> Tuple[List[np.ndarray], List[float]]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise IOError(f'Failed to open video file: {video_path}')
@@ -117,10 +121,18 @@ def extract_sampled_frames(video_path: str, fractions: List[float] = [0.25, 0.50
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     duration = total_frames / fps if total_frames > 0 else 1.0
     
+    if fractions is None:
+        if num_samples <= 1:
+            sample_fracs = [0.5]
+        else:
+            sample_fracs = [float(i) / float(num_samples + 1) for i in range(1, num_samples + 1)]
+    else:
+        sample_fracs = fractions
+        
     frames = []
     timestamps = []
     
-    for frac in fractions:
+    for frac in sample_fracs:
         target_frame = int(round(total_frames * frac))
         target_frame = max(0, min(target_frame, total_frames - 1))
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
@@ -167,6 +179,7 @@ def apply_lut_and_render(
         
     formatted_lut_path = str(Path(lut_path).resolve().as_posix()).replace(':', '\\:')
     
+    # Try stream copy for audio first
     cmd = [
         get_ffmpeg_binary(),
         '-y',
@@ -182,18 +195,26 @@ def apply_lut_and_render(
     try:
         run_subprocess(cmd)
     except Exception:
-        cmd_fallback = [
-            get_ffmpeg_binary(),
-            '-y',
-            '-i', input_path,
-            '-vf', f'lut3d=file=\'{formatted_lut_path}\'',
-            '-c:v', 'libx264',
-            '-preset', preset,
-            '-crf', str(crf),
-            '-pix_fmt', 'yuv420p',
-            '-an',
-            output_path
-        ]
-        run_subprocess(cmd_fallback)
-        
+        # Fallback 1: Re-encode audio to AAC
+        cmd[-2] = 'aac'
+        cmd.insert(-1, '-b:a')
+        cmd.insert(-1, '192k')
+        try:
+            run_subprocess(cmd)
+        except Exception:
+            # Fallback 2: Render without audio (-an)
+            cmd_silent = [
+                get_ffmpeg_binary(),
+                '-y',
+                '-i', input_path,
+                '-vf', f'lut3d=file=\'{formatted_lut_path}\'',
+                '-c:v', 'libx264',
+                '-preset', preset,
+                '-crf', str(crf),
+                '-pix_fmt', 'yuv420p',
+                '-an',
+                output_path
+            ]
+            run_subprocess(cmd_silent)
+            
     return output_path

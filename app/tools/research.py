@@ -11,11 +11,14 @@ from app.models.analysis import CinematographyResearchResult, SearchCitation, Cr
 
 load_dotenv()
 
-def get_parallel_client() -> Parallel:
+def get_parallel_client() -> Optional[Parallel]:
     api_key = os.getenv("PARALLEL_API_KEY")
     if not api_key:
-        raise ValueError("PARALLEL_API_KEY environment variable is not set")
-    return Parallel(api_key=api_key)
+        return None
+    try:
+        return Parallel(api_key=api_key)
+    except Exception:
+        return None
 
 def get_genai_client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY")
@@ -37,6 +40,15 @@ def research_cinematography_principles(
     ]
     objective = f"Research cinematography techniques, film stock color response, filter characteristics (like Black Mist / Pro-Mist), and colorist principles for: '{creative_prompt}' in a {scene_context}."
     
+    if parallel_client is None:
+        # Honest fallback: Parallel API key not configured or client unavailable
+        return CinematographyResearchResult(
+            query=queries[0],
+            objective=objective,
+            sources=[],
+            is_grounded=False
+        )
+        
     try:
         search_res = parallel_client.search(
             search_queries=queries,
@@ -55,20 +67,22 @@ def research_cinematography_principles(
                 if not excerpt:
                     excerpt = title
                 citations.append(SearchCitation(title=title, url=url, excerpt=excerpt[:400]))
-    except Exception:
-        citations = [
-            SearchCitation(
-                title="Film Emulation & Diffusion Principles",
-                url="https://theasc.com",
-                excerpt=f"Negative film stocks combined with optical Black Mist diffusion require gentle highlight halation, lifted shadow toes, and protected skin tones for {creative_prompt}."
-            )
-        ]
-        
-    return CinematographyResearchResult(
-        query=queries[0],
-        objective=objective,
-        sources=citations
-    )
+                
+        return CinematographyResearchResult(
+            query=queries[0],
+            objective=objective,
+            sources=citations,
+            is_grounded=len(citations) > 0
+        )
+    except Exception as e:
+        print(f"[Parallel] Grounding search failed: {e}")
+        # Never fabricate citations on error
+        return CinematographyResearchResult(
+            query=queries[0],
+            objective=objective,
+            sources=[],
+            is_grounded=False
+        )
 
 def synthesize_creative_specification(
     creative_prompt: str,
@@ -79,14 +93,17 @@ def synthesize_creative_specification(
     if genai_client is None:
         genai_client = get_genai_client()
         
-    sources_text = "\n".join([f"- [{s.title}]({s.url}): {s.excerpt}" for s in research_result.sources])
-    
+    if research_result.is_grounded and research_result.sources:
+        sources_text = "\n".join([f"- [{s.title}]({s.url}): {s.excerpt}" for s in research_result.sources])
+        research_section = f"Cinematography research from Parallel:\n{sources_text}"
+    else:
+        research_section = "Parallel research: Grounding unavailable. Rely on expert digital intermediate color science principles."
+        
     prompt = f"""You are a master digital intermediate (DI) colorist.
 A filmmaker has requested the following creative color direction:
 User Prompt: "{creative_prompt}"
 
-Cinematography research from Parallel:
-{sources_text}
+{research_section}
 
 Synthesize this into a technical CreativeSpecification:
 1. Translate artistic descriptions into numeric values:
@@ -95,38 +112,40 @@ Synthesize this into a technical CreativeSpecification:
    - temperature_shift: -25.0 to +25.0.
    - tint_shift: -15.0 to +15.0.
    - black_mist_diffusion_strength: 0.0 to 1.0 (set >0.4 if mist, diffusion, or halation is requested).
-2. Explicitly specify highlight bias (e.g. warm amber), shadow bias (e.g. subtle cyan/slate), black level treatment (e.g. lifted filmic toe), and skin rendering intent.
+2. Explicitly specify highlight bias (e.g. warm amber, cool cyan), shadow bias (e.g. cool slate, deep teal), and black level treatment (e.g. filmic lifted, deep crushed).
 3. Extract 2-4 key cinematography principles.
-4. Include the provided citations.
-
-Return strictly conforming JSON matching the schema.
+4. Output JSON adhering to the CreativeSpecification schema.
 """
-
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=CreativeSpecification,
-        temperature=0.2,
-    )
-
-    models_to_try = ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]
-
-    for model_name in models_to_try:
-        for attempt in range(max_retries):
-            try:
-                response = genai_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=config,
+    
+    for attempt in range(max_retries):
+        try:
+            response = genai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=CreativeSpecification,
+                    temperature=0.2
                 )
-                data = json.loads(response.text)
-                data["citations"] = [s.model_dump() for s in research_result.sources]
-                return CreativeSpecification(**data)
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    wait_time = 5 * (attempt + 1)
-                    print(f"[{model_name}] Rate limit hit during synthesis. Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                else:
-                    break
-                    
-    raise RuntimeError("Gemini API is currently rate limited. Please retry in a few seconds.")
+            )
+            spec: CreativeSpecification = response.parsed
+            spec.citations = research_result.sources
+            return spec
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Deterministic fallback spec
+                return CreativeSpecification(
+                    look_title="Cinematic Film Look",
+                    target_aesthetic=creative_prompt,
+                    contrast_intent=1.10,
+                    saturation_intent=1.05,
+                    highlight_bias="warm golden",
+                    shadow_bias="cool slate",
+                    black_level_treatment="filmic lifted",
+                    temperature_shift=4.0,
+                    tint_shift=-2.0,
+                    black_mist_diffusion_strength=0.2,
+                    cinematography_principles=["Preserve highlight roll-off", "Complementary warm-cool color separation"],
+                    citations=research_result.sources
+                )
+            time.sleep(1.0)

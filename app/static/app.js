@@ -372,37 +372,80 @@ function initViewModeToggle() {
 // -------------------------------------------------------------
 function renderResults(result, sourceVideos) {
     document.getElementById("results-panel").style.display = "block";
-    document.getElementById("agent-status-badge").innerText = "Completed";
-    document.getElementById("agent-status-badge").className = "status-badge badge-done";
+    const statusBadge = document.getElementById("agent-status-badge");
+    statusBadge.textContent = "Completed";
+    statusBadge.className = "status-badge badge-done";
     
-    // Creative Spec Card
+    // Creative Spec Card (Safe DOM Construction)
     const spec = result.creative_specification;
     const specCard = document.getElementById("creative-spec-card");
-    specCard.innerHTML = `
-        <div class="spec-title-row">
-            <div class="spec-title">Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})</div>
-        </div>
-        <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 0.5rem;">${spec.target_aesthetic}</p>
-        <div class="spec-badges">
-            <span class="spec-badge">Contrast: ${spec.contrast_intent}x</span>
-            <span class="spec-badge">Saturation: ${spec.saturation_intent}x</span>
-            <span class="spec-badge">Highlights: ${spec.highlight_bias}</span>
-            <span class="spec-badge">Shadows: ${spec.shadow_bias}</span>
-            <span class="spec-badge">Skin Rendering: ${spec.skin_rendering_intent}</span>
-        </div>
-    `;
+    specCard.innerHTML = "";
     
-    // Citations
+    const titleRow = document.createElement("div");
+    titleRow.className = "spec-title-row";
+    const titleDiv = document.createElement("div");
+    titleDiv.className = "spec-title";
+    titleDiv.textContent = `Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})`;
+    titleRow.appendChild(titleDiv);
+    specCard.appendChild(titleRow);
+    
+    const descP = document.createElement("p");
+    descP.style.fontSize = "0.85rem";
+    descP.style.color = "#64748b";
+    descP.style.marginBottom = "0.5rem";
+    descP.textContent = spec.target_aesthetic;
+    specCard.appendChild(descP);
+    
+    const badgesDiv = document.createElement("div");
+    badgesDiv.className = "spec-badges";
+    
+    const badgeItems = [
+        `Contrast: ${spec.contrast_intent}x`,
+        `Saturation: ${spec.saturation_intent}x`,
+        `Highlights: ${spec.highlight_bias}`,
+        `Shadows: ${spec.shadow_bias}`
+    ];
+    
+    badgeItems.forEach(bText => {
+        const bSpan = document.createElement("span");
+        bSpan.className = "spec-badge";
+        bSpan.textContent = bText;
+        badgesDiv.appendChild(bSpan);
+    });
+    specCard.appendChild(badgesDiv);
+    
+    // Citations (Safe URL validation)
     const citationsList = document.getElementById("citations-list");
     citationsList.innerHTML = "";
-    result.research_citations.forEach(c => {
-        const link = document.createElement("a");
-        link.className = "citation-link";
-        link.href = c.url || "#";
-        link.target = "_blank";
-        link.innerText = `Source: ${c.title}`;
-        citationsList.appendChild(link);
-    });
+    if (result.research_citations && result.research_citations.length > 0) {
+        result.research_citations.forEach(c => {
+            const link = document.createElement("a");
+            link.className = "citation-link";
+            if (c.url && (c.url.startsWith("http://") || c.url.startsWith("https://"))) {
+                link.href = c.url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+            } else {
+                link.href = "#";
+            }
+            link.textContent = `Source: ${c.title}`;
+            citationsList.appendChild(link);
+        });
+    } else {
+        const fallbackText = document.createElement("div");
+        fallbackText.style.fontSize = "0.85rem";
+        fallbackText.style.color = "#94a3b8";
+        fallbackText.textContent = "Parallel grounding unavailable — synthesized with ungrounded color science principles.";
+        citationsList.appendChild(fallbackText);
+    }
+    
+    // Shared Look LUT button
+    const btnSharedLut = document.getElementById("btn-download-shared-lut");
+    if (btnSharedLut && result.shared_lut_path) {
+        const sharedFilename = result.shared_lut_path.split("/").pop().split("\\").pop();
+        btnSharedLut.href = `/api/jobs/${currentJobId}/files/${sharedFilename}`;
+        btnSharedLut.download = `shared_creative_look.cube`;
+    }
     
     // Shot Tabs
     const shotTabs = document.getElementById("shot-tabs");
@@ -411,7 +454,7 @@ function renderResults(result, sourceVideos) {
         const isMaster = (r.target_shot_id === result.reference_shot_id);
         const btn = document.createElement("button");
         btn.className = `shot-tab ${idx === 0 ? "active" : ""}`;
-        btn.innerText = `${r.target_shot_id}${isMaster ? " (Master Ref)" : ""}`;
+        btn.textContent = `${r.target_shot_id}${isMaster ? " (Master Ref)" : ""}`;
         btn.addEventListener("click", () => {
             document.querySelectorAll(".shot-tab").forEach(t => t.classList.remove("active"));
             btn.classList.add("active");
@@ -459,31 +502,36 @@ function displayShotResult(res, shotIdx, sourceVideos) {
         playerAfter.src = afterVideoUrl;
     }
     
-    document.getElementById("label-source-shot").innerText = `Source: ${res.target_shot_id} (${sourceFilename})`;
-    document.getElementById("label-graded-shot").innerText = `Graded: ${res.target_shot_id}`;
+    document.getElementById("label-source-shot").textContent = `Source: ${res.target_shot_id} (${sourceFilename})`;
+    document.getElementById("label-graded-shot").textContent = `Graded: ${res.target_shot_id}`;
     
     // Scores
     const beforeScore = Math.round(res.before_consistency.overall_score);
     const afterScore = Math.round(res.after_consistency.overall_score);
-    document.getElementById("score-before").innerText = beforeScore;
-    document.getElementById("score-after").innerText = afterScore;
+    document.getElementById("score-before").textContent = beforeScore;
+    document.getElementById("score-after").textContent = afterScore;
     
     const delta = afterScore - beforeScore;
-    document.getElementById("score-delta").innerText = delta >= 0 ? `+${delta} points consistency match` : `Master Style Applied`;
+    if (res.revisions_performed && res.revisions_performed > 0) {
+        document.getElementById("score-delta").textContent = `Harmonized over ${res.revisions_performed} revision passes`;
+    } else {
+        document.getElementById("score-delta").textContent = delta >= 0 ? `+${delta} points consistency match` : `Master Style Established`;
+    }
     
-    document.getElementById("metric-lum").innerText = `${Math.round(res.after_consistency.luminance_similarity)} / 100`;
-    document.getElementById("metric-dist").innerText = `${Math.round(res.after_consistency.color_distribution_similarity)} / 100`;
+    document.getElementById("metric-tone").textContent = `${Math.round(res.after_consistency.tonal_similarity)} / 100`;
+    document.getElementById("metric-chroma").textContent = `${Math.round(res.after_consistency.chromatic_similarity)} / 100`;
+    document.getElementById("metric-health").textContent = `${Math.round(res.after_consistency.clipping_health)} / 100`;
     
-    document.getElementById("explanation-text").innerText = res.explanation;
+    document.getElementById("explanation-text").textContent = res.explanation;
     
     // Download Buttons
     const btnVid = document.getElementById("btn-download-video");
     btnVid.href = afterVideoUrl;
     btnVid.download = `${res.target_shot_id}_graded.mp4`;
-    btnVid.innerText = `Download ${res.target_shot_id} Video (.mp4)`;
+    btnVid.textContent = `Download ${res.target_shot_id} Video (.mp4)`;
     
     const btnLut = document.getElementById("btn-download-lut");
     btnLut.href = lutUrl;
     btnLut.download = `${res.target_shot_id}_grade.cube`;
-    btnLut.innerText = `Download ${res.target_shot_id} 3D LUT (.cube)`;
+    btnLut.textContent = `Download ${res.target_shot_id} 3D LUT (.cube)`;
 }

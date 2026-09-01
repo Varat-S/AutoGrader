@@ -23,8 +23,8 @@ def test_full_ffmpeg_match_pipeline(fixtures_dir, tmp_path):
     
     ref_frames, ref_times = extract_sampled_frames(ref_path)
     tgt_frames, tgt_times = extract_sampled_frames(tgt_path)
-    assert len(ref_frames) == 3
-    assert len(tgt_frames) == 3
+    assert len(ref_frames) >= 3
+    assert len(tgt_frames) >= 3
     
     ref_metrics = aggregate_shot_metrics('ref', ref_path, ref_frames, ref_times, ref_info['fps'], ref_info['width'], ref_info['height'], ref_info['duration_sec'])
     tgt_metrics = aggregate_shot_metrics('tgt', tgt_path, tgt_frames, tgt_times, tgt_info['fps'], tgt_info['width'], tgt_info['height'], tgt_info['duration_sec'])

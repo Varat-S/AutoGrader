@@ -6,7 +6,10 @@ class FrameMetrics(BaseModel):
     mean_luminance: float = Field(..., description="Mean luminance (0-255)")
     median_luminance: float = Field(..., description="Median luminance (0-255)")
     p5_luminance: float = Field(..., description="5th percentile luminance (black point indicator)")
-    p95_luminance: float = Field(..., description="95th percentile luminance (white point indicator)")
+    p25_luminance: float = Field(0.0, description="25th percentile luminance (shadow tone indicator)")
+    p50_luminance: float = Field(0.0, description="50th percentile luminance (midtone indicator)")
+    p75_luminance: float = Field(0.0, description="75th percentile luminance (upper midtone indicator)")
+    p95_luminance: float = Field(..., description="95th percentile luminance (highlight indicator)")
     shadow_clip_pct: float = Field(..., description="Percentage of pixels clipped in shadows (<2/255)")
     highlight_clip_pct: float = Field(..., description="Percentage of pixels clipped in highlights (>253/255)")
     lab_l_mean: float
@@ -29,6 +32,13 @@ class ShotMetrics(BaseModel):
     fps: float
     sampled_frames: List[FrameMetrics]
     avg_luminance: float
+    p5_luminance: float = 0.0
+    p25_luminance: float = 0.0
+    p50_luminance: float = 0.0
+    p75_luminance: float = 0.0
+    p95_luminance: float = 0.0
+    avg_shadow_clip_pct: float = 0.0
+    avg_highlight_clip_pct: float = 0.0
     avg_lab_mean: List[float] = Field(..., description="[L, a, b] average mean")
     avg_lab_std: List[float] = Field(..., description="[L, a, b] average std")
     avg_chroma: float
@@ -42,8 +52,9 @@ class ShotSemanticAnalysis(BaseModel):
     exposure_assessment: str = Field("balanced", description="e.g. balanced, underexposed, overexposed, high_key, low_key")
     target_exposure_compensation_ev: float = Field(0.0, ge=-2.0, le=2.0, description="Recommended exposure adjustment in EV stops for this specific scene")
     black_point_lift: float = Field(0.0, ge=0.0, le=20.0, description="Shadow toe lift to prevent crushed blacks / Black Mist diffusion")
-    people_present: bool = Field(..., description="True if human subjects or faces are clearly visible")
-    skin_protection_required: bool = Field(..., description="True if skin tones must be preserved during color grading")
+    people_present: bool = Field(False, description="True if human subjects are present in frame")
+    # Note: Skin tone protection claim removed from core MVP per specification; field kept for schema backward compatibility
+    skin_protection_required: bool = Field(False, description="Reserved for future semantic qualifier extension")
     dominant_color_cast: str = Field(..., description="Visual perception of color temperature or tint")
     reference_suitability_score: float = Field(..., ge=0.0, le=1.0, description="Suitability score (0-1) to serve as technical color reference")
     intentional_light_sources: List[str] = Field(default_factory=list, description="Practical lights that should intentionally remain warm/cool")
@@ -60,6 +71,7 @@ class CinematographyResearchResult(BaseModel):
     objective: str
     sources: List[SearchCitation]
     synthesized_principles: List[str] = Field(default_factory=list, description="Core cinematography principles extracted from sources")
+    is_grounded: bool = Field(True, description="True if Parallel returned genuine verified research sources")
 
 class CreativeSpecification(BaseModel):
     look_title: str
@@ -69,7 +81,6 @@ class CreativeSpecification(BaseModel):
     highlight_bias: str = Field("neutral", description="e.g. warm amber, neutral, soft golden")
     shadow_bias: str = Field("neutral", description="e.g. cool teal, deep blue, neutral")
     black_level_treatment: str = Field("neutral", description="e.g. filmic lifted, deep crushed, neutral")
-    skin_rendering_intent: str = Field("natural", description="Instructions for preserving natural skin tones")
     temperature_shift: float = Field(0.0, ge=-50.0, le=50.0, description="Creative temperature bias")
     tint_shift: float = Field(0.0, ge=-50.0, le=50.0, description="Creative tint bias")
     black_mist_diffusion_strength: float = Field(0.0, ge=0.0, le=1.0, description="Black Mist diffusion emulation intensity")

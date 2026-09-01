@@ -71,7 +71,7 @@
                     <label for="color-profile-select">Color Space Profile</label>
                     <select id="color-profile-select" class="form-control">
                         <option value="auto" selected>Auto-detect (Auto CST for Log or Rec.709)</option>
-                        <option value="Log">DJI D-Log / S-Log3 / Apple Log (Log CST)</option>
+                        <option value="Log">Generic Log / Flat Normalization (Experimental)</option>
                         <option value="Rec.709">Standard Rec.709</option>
                     </select>
                 </div>
@@ -249,7 +249,7 @@
 
             <div class="metrics-dashboard">
                 <div class="metric-card score-card">
-                    <div class="metric-label">Color Consistency</div>
+                    <div class="metric-label">Consistency Match</div>
                     <div class="score-progression">
                         <span id="score-before" class="score-val score-low">--</span>
                         <span class="score-arrow">➔</span>
@@ -260,21 +260,21 @@
                 </div>
 
                 <div class="metric-card">
-                    <div class="metric-label">Dynamic Range & Contrast</div>
-                    <div id="metric-lum" class="metric-val">--</div>
-                    <div class="metric-subtext">Healthy black point & headroom</div>
+                    <div class="metric-label">Tonal & Exposure Similarity</div>
+                    <div id="metric-tone" class="metric-val">--</div>
+                    <div class="metric-subtext">Quantile quantile L* alignment</div>
                 </div>
 
                 <div class="metric-card">
-                    <div class="metric-label">Color Distribution Similarity</div>
-                    <div id="metric-dist" class="metric-val">--</div>
-                    <div class="metric-subtext">CIELAB centroid convergence</div>
+                    <div class="metric-label">Chromatic CIELAB Harmony</div>
+                    <div id="metric-chroma" class="metric-val">--</div>
+                    <div class="metric-subtext">Delta E centroid convergence</div>
                 </div>
 
                 <div class="metric-card">
-                    <div class="metric-label">Skin Tone Protection</div>
-                    <div id="metric-skin" class="metric-val">Protected</div>
-                    <div class="metric-subtext">Hue preservation constraint</div>
+                    <div class="metric-label">Clipping & Image Health</div>
+                    <div id="metric-health" class="metric-val">--</div>
+                    <div class="metric-subtext">Protected shadows & highlights</div>
                 </div>
             </div>
 
@@ -295,7 +295,10 @@
                     Download Graded Video (.mp4)
                 </a>
                 <a id="btn-download-lut" class="btn btn-secondary" download>
-                    Download 3D LUT (.cube)
+                    Download Per-Shot 3D LUT (.cube)
+                </a>
+                <a id="btn-download-shared-lut" class="btn btn-secondary" download>
+                    Download Shared Creative Look LUT (.cube)
                 </a>
             </div>
         </section>
