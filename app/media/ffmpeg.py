@@ -105,7 +105,11 @@ def probe_video(video_path: str) -> Dict[str, Any]:
         'fps': round(fps, 2),
         'duration_sec': round(duration, 2),
         'codec': stream.get('codec_name', 'unknown'),
-        'pix_fmt': stream.get('pix_fmt', 'unknown')
+        'pix_fmt': stream.get('pix_fmt', 'unknown'),
+        'color_primaries': stream.get('color_primaries', 'unknown'),
+        'color_transfer': stream.get('color_transfer', 'unknown'),
+        'color_space': stream.get('color_space', 'unknown'),
+        'color_range': stream.get('color_range', 'unknown')
     }
 
 def extract_sampled_frames(

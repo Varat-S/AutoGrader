@@ -58,33 +58,68 @@ def test_same_scene_underexposed_match():
     assert after_score.tonal_similarity > before_score.tonal_similarity + 40.0
     assert after_score.overall_score > before_score.overall_score
 
-def test_day_night_cross_scene_continuity_independence():
-    # Day reference: bright daylight
-    day_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    day_frame[:, :] = [160, 150, 140] # Warm day
-    
-    # Night candidate: naturally dark scene with dark sky and practical light
+def test_identical_look_on_differently_colored_day_night_scenes():
+    # Day reference: warm daylight colors
+    day_frame = np.full((100, 100, 3), [130, 160, 190], dtype=np.uint8)
+    # Night candidate: deep blue ambient colors with practical
     night_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    night_frame[:80, :] = [25, 20, 15] # Deep dark shadows
-    night_frame[80:, :] = [90, 80, 70] # Practical light
+    night_frame[:80, :] = [35, 20, 15] # Deep blue/dark shadows
+    night_frame[80:, :] = [70, 90, 120] # Light practical
     
     shot_day = aggregate_shot_metrics("day", "day.mp4", [day_frame], [0.0], 30.0, 100, 100, 1.0)
     shot_night = aggregate_shot_metrics("night", "night.mp4", [night_frame], [0.0], 30.0, 100, 100, 1.0)
     
-    # In same_scene_match mode, night shot fails tonal match because it is naturally dark
-    same_scene_score = compute_consistency_score(shot_day, shot_night, evaluation_mode="same_scene_match")
-    assert same_scene_score.tonal_similarity < 20.0
+    # Same unified creative look applied to both
+    plan_ref = GradePlan(shot_id="day", is_same_scene=False)
+    plan_ref.creative_look.contrast = 1.12
+    plan_ref.creative_look.highlight_rgb_offset = [-0.04, 0.01, 0.05] # warm amber
+    plan_ref.creative_look.shadow_rgb_offset = [0.05, 0.01, -0.03] # cool slate
     
-    # In cross_scene_look_continuity mode, night shot is evaluated on look health & palette adherence, not absolute luminance
-    cross_scene_score = compute_consistency_score(shot_day, shot_night, evaluation_mode="cross_scene_look_continuity")
-    assert cross_scene_score.tonal_similarity >= 75.0, "Night shot should have healthy tonal score in cross-scene mode"
-    assert cross_scene_score.overall_score > same_scene_score.overall_score
+    plan_night = GradePlan(shot_id="night", is_same_scene=False)
+    plan_night.creative_look.contrast = 1.12
+    plan_night.creative_look.highlight_rgb_offset = [-0.04, 0.01, 0.05]
+    plan_night.creative_look.shadow_rgb_offset = [0.05, 0.01, -0.03]
+    
+    graded_night = apply_color_grade_to_frame(night_frame, plan_night)
+    shot_graded_night = aggregate_shot_metrics("graded_night", "night.mp4", [graded_night], [0.0], 30.0, 100, 100, 1.0)
+    
+    # In cross-scene mode with standardized probes, identical look passes cleanly
+    score = compute_consistency_score(
+        reference=shot_day,
+        candidate=shot_graded_night,
+        evaluation_mode="cross_scene_look_continuity",
+        ref_plan=plan_ref,
+        cand_plan=plan_night
+    )
+    
+    assert score.overall_score >= 80.0, f"Identical look should pass cross-scene continuity, got {score.overall_score}"
+    assert score.chromatic_similarity >= 95.0, f"Chromatic split-tone harmony should be high on probes, got {score.chromatic_similarity}"
+
+def test_divergent_split_bias_reduces_look_continuity():
+    shot = aggregate_shot_metrics("s", "s.mp4", [np.full((50, 50, 3), 100, dtype=np.uint8)], [0.0], 30.0, 50, 50, 1.0)
+    
+    plan_ref = GradePlan(shot_id="ref")
+    plan_ref.creative_look.highlight_rgb_offset = [-0.05, 0.01, 0.06] # warm amber
+    plan_ref.creative_look.shadow_rgb_offset = [0.06, 0.0, -0.04] # cool slate
+    
+    # Divergent look: cool cyan highlights & warm brown shadows
+    plan_divergent = GradePlan(shot_id="div")
+    plan_divergent.creative_look.highlight_rgb_offset = [0.06, 0.01, -0.05] # cool cyan
+    plan_divergent.creative_look.shadow_rgb_offset = [-0.05, 0.0, 0.05] # warm brown
+    
+    score = compute_consistency_score(
+        reference=shot,
+        candidate=shot,
+        evaluation_mode="cross_scene_look_continuity",
+        ref_plan=plan_ref,
+        cand_plan=plan_divergent
+    )
+    
+    assert score.chromatic_similarity < 50.0, f"Divergent highlight/shadow biases must drop chromatic similarity, got {score.chromatic_similarity}"
 
 def test_night_preservation_does_not_blow_out_night_scene():
-    # Night frame
     night_frame = np.full((100, 100, 3), 25, dtype=np.uint8)
     
-    # Cross-scene grade plan (creative look without same-scene luminance forcing)
     plan = GradePlan(shot_id="night", is_same_scene=False)
     plan.creative_look.contrast = 1.10
     plan.creative_look.saturation = 1.05
@@ -93,6 +128,5 @@ def test_night_preservation_does_not_blow_out_night_scene():
     graded_night = apply_color_grade_to_frame(night_frame, plan)
     metrics_graded = compute_frame_metrics(graded_night)
     
-    # Night shot median/mean must remain dark (< 45), NOT blown out to daytime 150+
     assert metrics_graded.mean_luminance < 45.0, f"Night shot was blown out! Mean: {metrics_graded.mean_luminance}"
     assert metrics_graded.p5_luminance < 30.0

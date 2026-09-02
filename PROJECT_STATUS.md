@@ -1,24 +1,25 @@
-﻿# Autonomous Multimodal Colorist Assistant - Project Status & Roadmap
+﻿# AutoGrader — Project Status & Remediation Summary
 
 ## 🎯 Hackathon Metadata
 - **Hackathon**: Google Cloud "Agentic Cinema: The Blockbuster Hackathon"
 - **Track**: Parallel — Search & Web Intelligence
 - **Repository**: [https://github.com/Varat-S/AutoGrader](https://github.com/Varat-S/AutoGrader)
 - **Live Cloud Run URL**: [https://autograder-32655487684.us-central1.run.app](https://autograder-32655487684.us-central1.run.app)
-- **Primary Agent Pattern**: Autonomous Multi-Shot Perception $\rightarrow$ Web Research $\rightarrow$ CIELAB Grading $\rightarrow$ Evaluation & Revision $\rightarrow$ Delivery
+- **Architecture**: Autonomous Multimodal Vision (Gemini) $\rightarrow$ Cinematography Web Intelligence (Parallel SDK) $\rightarrow$ Space-Consistent Staged DI Transforms $\rightarrow$ Standardized Probe Evaluation $\rightarrow$ Honest Revision State Machine $\rightarrow$ Dual Float32 3D LUT Delivery
 
 ---
 
-## 📊 Phase Progress Summary
+## 📊 Remediation Milestones & Verification
 
-| Phase | Description | Status | Verification |
-| :--- | :--- | :--- | :--- |
-| **Phase 0** | Workspace & Dependency Initialization | **DONE** | Python 3.13 `.venv`, FFmpeg 8.1.1, OpenCV, Gemini 3.5, Parallel SDK verified |
-| **Phase 1** | Deterministic Local Color Proof-of-Concept | **DONE** | CIELAB perceptual metrics, 33x33x33 `.cube` LUT generation, FFmpeg filter graph |
-| **Phase 2 & 3** | Multimodal Scene Perception & Protection | **DONE** | Gemini multimodal vision: lighting context, subject/face detection, skin tone protection flags |
-| **Phase 4** | Parallel Cinematography Web Intelligence | **DONE** | Parallel search API + Gemini synthesis of bounded creative styling rules & citations |
-| **Phase 5** | Autonomous Multi-Shot Loop & Revision | **DONE** | Auto-reference selection, multi-shot batch processing, fast preview evaluation & revision |
-| **Phase 6** | Web Interface & REST Backend | **DONE** | FastAPI backend + DaVinci-inspired dark theme dashboard with side-by-side synchronized video player |
-| **Phase 7** | Google Cloud Run Deployment | **DONE** | Containerized with Docker, deployed to Google Cloud Run (`https://autograder-32655487684.us-central1.run.app`) |
-| **Phase 8** | Multi-Clip Sequence Hardening & Verification | **DONE** | Tested on real 1080p & 4K UHD footage with highlight roll-off and Black Mist diffusion |
-| **Phase 9** | Final Submission Materials & Polish | **DONE** | MIT License, Architecture Diagrams, Devpost pitch documentation |
+| Milestone | Key Architectural Deliverable | Status | Verification |
+| :--- | :--- | :---: | :--- |
+| **P0: Parallel SDK Excerpts** | Direct `WebSearchResult.excerpts` parsing, strict grounding validation, honest ungrounded fallback | **DONE** | `tests/unit/test_parallel_sdk_grounding.py` (100% pass) |
+| **P0: Cross-Scene Look Metric** | Standardized synthetic transform probe evaluation ($L=20, 50, 80$, warm/cool) + scene image health | **DONE** | `tests/unit/test_metrics_remediation.py` (100% pass) |
+| **P0: Revision State Machine** | Explicit states (`INITIAL_EVALUATION`, `ACCEPTED`, `REVISION_PROPOSED`, `REVISION_IMPROVED`, `REVISION_REJECTED`, `NO_ACTIONABLE_REVISION`, `MAX_REVISIONS_REACHED`), best-plan retention, parameter domain clamping | **DONE** | `tests/unit/test_agent_revision.py` (100% pass) |
+| **P0: Explicit Scene Grouping** | `scene_group_id` and `relationship_to_reference` (`reference`, `same_scene`, `independent_scene`) | **DONE** | Tested on mixed Day/Day/Night sequence |
+| **P1: Space-Consistent Math** | CIELAB same-scene match calculated in post-normalization/balanced intermediate space | **DONE** | Tested on Log and non-zero EV inputs |
+| **P1: Authoritative Profiles** | Explicit `Rec.709` strictly disables Log CST; explicit `Log` forces normalization; `auto` uses ffprobe metadata | **DONE** | `probe_video` extracts primaries/transfer metadata |
+| **P1: Float32 LUT Precision** | Pure float32 math across all 6 stages; continuous non-quantized output | **DONE** | `test_lut_continuous_float_precision_not_quantized_to_uint8` (100% pass) |
+| **P1: CI & Live Test Split** | Deterministic CI suite runs offline in <8s; live smoke tests opt-in with `@pytest.mark.live` | **DONE** | `.github/workflows/ci.yml` + `pytest.ini` (`addopts = -m "not live"`) |
+| **P1: Server & Frontend Safety** | Max 4 clips, 500MB size limit, ffprobe decode check, filename XSS eliminated via DOM textContent | **DONE** | Tested upload and API endpoints |
+| **P1: Terminology Cleanup** | Renamed Black Mist to "Black-Mist-inspired tonal response", removed skin-masking/Cinema DNG/ADK claims | **DONE** | Verified in UI, docs, and schemas |

@@ -157,15 +157,25 @@ function updateClipsList(filenames) {
         const shotId = `shot_${String.fromCharCode(65 + idx)}`;
         const row = document.createElement("div");
         row.className = "clip-row";
-        row.innerHTML = `
-            <span><strong>${shotId}</strong>: ${fname}</span>
-            <span class="clip-tag">${fname.endsWith(".MP4") || fname.endsWith(".mp4") ? "MP4" : "MOV"}</span>
-        `;
+        
+        const spanText = document.createElement("span");
+        const strong = document.createElement("strong");
+        strong.textContent = shotId;
+        spanText.appendChild(strong);
+        spanText.appendChild(document.createTextNode(`: ${fname}`));
+        
+        const tag = document.createElement("span");
+        tag.className = "clip-tag";
+        const ext = fname.split(".").pop().toUpperCase();
+        tag.textContent = ext;
+        
+        row.appendChild(spanText);
+        row.appendChild(tag);
         clipsList.appendChild(row);
         
         const opt = document.createElement("option");
         opt.value = idx;
-        opt.innerText = `Shot ${String.fromCharCode(65 + idx)} (${fname})`;
+        opt.textContent = `Shot ${String.fromCharCode(65 + idx)} (${fname})`;
         refSelect.appendChild(opt);
     });
     
@@ -512,10 +522,11 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     document.getElementById("score-after").textContent = afterScore;
     
     const delta = afterScore - beforeScore;
+    const stateText = res.state ? ` (${res.state})` : "";
     if (res.revisions_performed && res.revisions_performed > 0) {
-        document.getElementById("score-delta").textContent = `Harmonized over ${res.revisions_performed} revision passes`;
+        document.getElementById("score-delta").textContent = `${res.state || "REVISION"}: Harmonized over ${res.revisions_performed} revision passes`;
     } else {
-        document.getElementById("score-delta").textContent = delta >= 0 ? `+${delta} points consistency match` : `Master Style Established`;
+        document.getElementById("score-delta").textContent = delta >= 0 ? `+${delta} points consistency${stateText}` : `Master Style Established${stateText}`;
     }
     
     document.getElementById("metric-tone").textContent = `${Math.round(res.after_consistency.tonal_similarity)} / 100`;

@@ -1,4 +1,4 @@
-﻿from typing import List, Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 class FrameMetrics(BaseModel):
@@ -46,20 +46,25 @@ class ShotMetrics(BaseModel):
 
 class ShotSemanticAnalysis(BaseModel):
     shot_id: str
+    scene_group_id: str = Field("group_1", description="Logical scene group identifier e.g. group_1, group_2")
+    relationship_to_reference: str = Field("same_scene", description="Relationship: reference, same_scene, independent_scene")
     scene_description: str = Field(..., description="Brief description of visual content and setting")
     lighting_environment: str = Field(..., description="e.g. outdoor daylight, golden hour, overcast, indoor tungsten, mixed")
     time_of_day: str = Field(..., description="e.g. day, night, golden_hour, dusk, dawn")
     exposure_assessment: str = Field("balanced", description="e.g. balanced, underexposed, overexposed, high_key, low_key")
     target_exposure_compensation_ev: float = Field(0.0, ge=-2.0, le=2.0, description="Recommended exposure adjustment in EV stops for this specific scene")
-    black_point_lift: float = Field(0.0, ge=0.0, le=20.0, description="Shadow toe lift to prevent crushed blacks / Black Mist diffusion")
+    black_point_lift: float = Field(0.0, ge=0.0, le=20.0, description="Shadow toe lift to emulate soft filmic shadow density")
     people_present: bool = Field(False, description="True if human subjects are present in frame")
-    # Note: Skin tone protection claim removed from core MVP per specification; field kept for schema backward compatibility
-    skin_protection_required: bool = Field(False, description="Reserved for future semantic qualifier extension")
     dominant_color_cast: str = Field(..., description="Visual perception of color temperature or tint")
     reference_suitability_score: float = Field(..., ge=0.0, le=1.0, description="Suitability score (0-1) to serve as technical color reference")
     intentional_light_sources: List[str] = Field(default_factory=list, description="Practical lights that should intentionally remain warm/cool")
     likely_neutral_objects: List[str] = Field(default_factory=list, description="Objects in frame likely to be neutral white/gray")
     key_composition_elements: List[str] = Field(default_factory=list, description="Dominant visual anchors in scene")
+
+class SequenceInspectionResult(BaseModel):
+    shots: List[ShotSemanticAnalysis]
+    recommended_reference_shot_id: str = Field(..., description="ID of the optimal technical reference shot")
+    scene_relationship: str = Field("mixed_sequence", description="continuous_sequence, independent_scenes, or mixed_sequence")
 
 class SearchCitation(BaseModel):
     title: str

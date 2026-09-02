@@ -1,4 +1,4 @@
-﻿import os
+import os
 import cv2
 import json
 import time
@@ -10,15 +10,10 @@ from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from app.models.analysis import ShotSemanticAnalysis
+from app.models.analysis import ShotSemanticAnalysis, SequenceInspectionResult
 from app.media.ffmpeg import extract_sampled_frames
 
 load_dotenv()
-
-class SequenceInspectionResult(BaseModel):
-    shots: List[ShotSemanticAnalysis]
-    recommended_reference_shot_id: str = Field(..., description="ID of the optimal technical reference shot")
-    scene_relationship: str = Field("independent_scenes", description="continuous_sequence or independent_scenes")
 
 def get_genai_client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY")
@@ -39,7 +34,7 @@ def inspect_all_shots_batched(
     
     for i, path in enumerate(video_paths):
         shot_id = f"shot_{chr(65 + i)}"
-        frames, _ = extract_sampled_frames(path, fractions=[0.25, 0.50, 0.75])
+        frames, _ = extract_sampled_frames(path, num_samples=3)
         
         shot_headers.append(f"Shot {shot_id} (Clip: {os.path.basename(path)}): 3 keyframes attached.")
         for f in frames:
@@ -56,19 +51,23 @@ Here are the {len(video_paths)} shots to analyze in sequence:
 
 For EACH shot independently analyze:
 1. Setting and scene description.
-2. Lighting environment (outdoor daylight, direct sun, overcast, golden hour, indoor tungsten, twilight, etc.).
-3. Time of day (day, night, golden_hour, dusk, dawn).
-4. Exposure assessment (balanced, underexposed, overexposed, high_key, low_key).
-5. Target exposure compensation in EV stops (-2.0 to +2.0) needed to optimize this specific shot's dynamic range without blowing highlights.
-6. Black point lift (0.0 to 15.0) to emulate soft filmic shadow density / Black Mist diffusion.
-7. Presence of human subjects, faces, or skin tones (if present, skin_protection_required=True).
-8. Dominant color temperature or cast.
-9. Reference suitability score (0.0 to 1.0).
+2. Assign `scene_group_id`: Group shots sharing the same environment/lighting into the same group ID (e.g. "group_1", "group_2").
+3. Assign `relationship_to_reference`: 
+   - Set "reference" for the single recommended master reference shot.
+   - Set "same_scene" for shots in the SAME scene group as the reference.
+   - Set "independent_scene" for shots in a DIFFERENT scene group / time of day (e.g. night shot vs daytime reference).
+4. Lighting environment (outdoor daylight, direct sun, overcast, golden hour, indoor tungsten, night blue ambient, etc.).
+5. Time of day (day, night, golden_hour, dusk, dawn).
+6. Exposure assessment (balanced, underexposed, overexposed, high_key, low_key).
+7. Target exposure compensation in EV stops (-2.0 to +2.0) needed to optimize this specific shot's dynamic range.
+8. Black point lift (0.0 to 15.0) for filmic shadow toe density.
+9. Presence of human subjects (people_present: true/false).
+10. Dominant color temperature or cast.
+11. Reference suitability score (0.0 to 1.0).
 
-Also evaluate the sequence relationship:
-- Set scene_relationship='continuous_sequence' if shots are camera angles of the SAME scene/time of day.
-- Set scene_relationship='independent_scenes' if shots are taken in different environments/times of day.
-- Set recommended_reference_shot_id to the shot ID with the most balanced exposure/lighting.
+Also evaluate overall sequence relationship:
+- Set recommended_reference_shot_id to the shot ID with the most balanced reference exposure.
+- Set scene_relationship to 'continuous_sequence' if all shots are in the same scene, 'independent_scenes' if all differ, or 'mixed_sequence' if mixed.
 
 Return strictly conforming JSON matching the schema.
 """
@@ -81,7 +80,8 @@ Return strictly conforming JSON matching the schema.
         temperature=0.2,
     )
 
-    models_to_try = ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "models/gemini-3.5-flash"]
+    last_error = None
     
     for model_name in models_to_try:
         for attempt in range(max_retries):
@@ -92,15 +92,59 @@ Return strictly conforming JSON matching the schema.
                     config=config,
                 )
                 data = json.loads(response.text)
-                for idx, s in enumerate(data.get("shots", [])):
+                shots_data = data.get("shots", [])
+                
+                # Defensive normalization of shot IDs and length validation
+                if len(shots_data) != len(video_paths):
+                    # Align count
+                    while len(shots_data) < len(video_paths):
+                        idx = len(shots_data)
+                        shots_data.append({
+                            "shot_id": f"shot_{chr(65 + idx)}",
+                            "scene_group_id": "group_1",
+                            "relationship_to_reference": "same_scene",
+                            "scene_description": f"Clip {os.path.basename(video_paths[idx])}",
+                            "lighting_environment": "natural lighting",
+                            "time_of_day": "day",
+                            "exposure_assessment": "balanced",
+                            "target_exposure_compensation_ev": 0.0,
+                            "black_point_lift": 2.0,
+                            "people_present": False,
+                            "dominant_color_cast": "neutral",
+                            "reference_suitability_score": 0.8
+                        })
+                        
+                for idx, s in enumerate(shots_data):
                     s["shot_id"] = f"shot_{chr(65 + idx)}"
-                return SequenceInspectionResult(**data)
+                    
+                rec_ref = data.get("recommended_reference_shot_id", "shot_A")
+                if rec_ref not in [f"shot_{chr(65 + i)}" for i in range(len(video_paths))]:
+                    rec_ref = "shot_A"
+                    
+                # Ensure chosen reference has relationship 'reference'
+                for s in shots_data:
+                    if s["shot_id"] == rec_ref:
+                        s["relationship_to_reference"] = "reference"
+                        
+                return SequenceInspectionResult(
+                    shots=[ShotSemanticAnalysis(**s) for s in shots_data],
+                    recommended_reference_shot_id=rec_ref,
+                    scene_relationship=data.get("scene_relationship", "mixed_sequence")
+                )
             except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    wait_time = 5 * (attempt + 1)
+                last_error = e
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    wait_time = 3 * (attempt + 1)
                     print(f"[{model_name}] Rate limit hit. Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                 else:
                     break
                     
-    raise RuntimeError("Gemini API is currently rate limited. Please retry in a few seconds.")
+    # Categorized error reporting
+    if "API_KEY_INVALID" in str(last_error) or "401" in str(last_error):
+        raise PermissionError(f"Gemini API authentication failed: {last_error}")
+    elif "429" in str(last_error) or "RESOURCE_EXHAUSTED" in str(last_error):
+        raise RuntimeError(f"Gemini API rate limit exceeded: {last_error}")
+    else:
+        raise RuntimeError(f"Gemini footage inspection failed ({type(last_error).__name__}): {last_error}")

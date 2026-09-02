@@ -95,17 +95,27 @@ class ColorGradeParams(BaseModel):
 
 class ConsistencyScore(BaseModel):
     overall_score: float = Field(..., ge=0.0, le=100.0, description="Overall consistency score (0-100)")
-    tonal_similarity: float = Field(..., ge=0.0, le=100.0, description="Quantile-based tonal/luminance similarity")
-    chromatic_similarity: float = Field(..., ge=0.0, le=100.0, description="CIELAB a*, b* centroid & chroma similarity")
-    distribution_similarity: float = Field(..., ge=0.0, le=100.0, description="Tonal & chromatic spread distribution distance")
+    tonal_similarity: float = Field(..., ge=0.0, le=100.0, description="Quantile-based tonal/luminance similarity or probe tone response")
+    chromatic_similarity: float = Field(..., ge=0.0, le=100.0, description="CIELAB centroid similarity or probe split-tone harmony")
+    distribution_similarity: float = Field(..., ge=0.0, le=100.0, description="Tonal/chromatic spread or saturation scaling adherence")
     clipping_health: float = Field(..., ge=0.0, le=100.0, description="Penalty for shadow crush (<2) or highlight blow-out (>253)")
     evaluation_mode: str = Field("same_scene_match", description="same_scene_match or cross_scene_look_continuity")
     diagnosis: Optional[str] = Field(None, description="Diagnostic feedback for autonomous revision")
     notes: Optional[str] = None
 
+class RevisionRecord(BaseModel):
+    iteration: int
+    state: str = Field(..., description="INITIAL_EVALUATION, ACCEPTED, REVISION_PROPOSED, REVISION_IMPROVED, REVISION_REJECTED, NO_ACTIONABLE_REVISION, MAX_REVISIONS_REACHED")
+    action_taken: str
+    overall_score_before: float
+    overall_score_after: Optional[float] = None
+    diagnosis: str
+    parameter_deltas: Dict[str, Any] = Field(default_factory=dict)
+
 class GradeResult(BaseModel):
     reference_shot_id: str
     target_shot_id: str
+    state: str = Field("ACCEPTED", description="Final revision state machine outcome")
     plan: Optional[GradePlan] = None
     params: ColorGradeParams
     lut_path: Optional[str] = None
@@ -114,4 +124,5 @@ class GradeResult(BaseModel):
     before_consistency: ConsistencyScore
     after_consistency: ConsistencyScore
     revisions_performed: int = 0
+    history: List[RevisionRecord] = Field(default_factory=list)
     explanation: str

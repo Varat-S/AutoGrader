@@ -9,14 +9,15 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agent import AutonomousColoristAgent
+from app.media.ffmpeg import probe_video
 
 app = FastAPI(
-    title="Autonomous Multimodal Colorist Assistant",
-    description="Research-to-Grade Autonomous Colorist using Google ADK, Gemini 3.6 Flash, Parallel Search, and OpenCV/FFmpeg.",
-    version="1.0.0"
+    title="AutoGrader — Autonomous Multimodal Cinema Colorist",
+    description="Multimodal Autonomous Colorist using Gemini Multimodal Vision, Parallel Cinematography Search, and Staged 32-bit Floating-Point DI Color Science.",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -30,56 +31,66 @@ app.add_middleware(
 JOBS_DIR = Path("output/jobs")
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-# In-memory and persisted job registry
+# In-memory job registry and concurrency semaphore
 jobs: Dict[str, Dict[str, Any]] = {}
+MAX_CONCURRENT_JOBS = 3
+active_job_semaphore = threading.Semaphore(MAX_CONCURRENT_JOBS)
+
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024 # 500 MB
+MAX_CLIPS_PER_JOB = 4
 
 class RunJobRequest(BaseModel):
-    creative_prompt: str
-    reference_index: Optional[int] = None
-    color_profile: str = "auto"
+    creative_prompt: str = Field(..., max_length=500, description="Filmmaker aesthetic description (max 500 characters)")
+    reference_index: Optional[int] = Field(None, ge=0, le=3, description="Optional 0-indexed reference clip selection")
+    color_profile: str = Field("auto", description="'auto', 'Rec.709', 'Log', or 'Generic Log'")
 
 def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int], color_profile: str = "auto"):
-    job = jobs[job_id]
-    job["state"] = "running"
-    job["progress"] = 10
-    
-    job_dir = JOBS_DIR / job_id
-    agent = AutonomousColoristAgent(work_dir=str(job_dir / "output"))
-    
-    def on_progress(event_msg: str):
-        job["events"].append(event_msg)
-        if "Inspecting" in event_msg:
-            job["progress"] = 25
-        elif "Researching" in event_msg:
-            job["progress"] = 45
-        elif "Synthesized" in event_msg:
-            job["progress"] = 60
-        elif "Calculating" in event_msg or "Rendering" in event_msg:
-            job["progress"] = min(90, job["progress"] + 10)
-        elif "complete" in event_msg:
+    job = jobs.get(job_id)
+    if not job:
+        return
+        
+    with active_job_semaphore:
+        job["state"] = "running"
+        job["progress"] = 10
+        
+        job_dir = JOBS_DIR / job_id
+        agent = AutonomousColoristAgent(work_dir=str(job_dir / "output"))
+        
+        def on_progress(event_msg: str):
+            job["events"].append(event_msg)
+            if "Inspecting" in event_msg:
+                job["progress"] = 25
+            elif "Researching" in event_msg:
+                job["progress"] = 45
+            elif "Synthesized" in event_msg:
+                job["progress"] = 60
+            elif "Rendering" in event_msg or "Evaluating" in event_msg:
+                job["progress"] = min(92, job["progress"] + 8)
+            elif "complete" in event_msg:
+                job["progress"] = 100
+                
+        try:
+            source_paths = job["source_videos"]
+            result = agent.process_sequence(
+                video_paths=source_paths,
+                creative_prompt=prompt,
+                reference_index=ref_idx,
+                color_profile=color_profile,
+                job_id=job_id,
+                progress_callback=on_progress
+            )
+            job["state"] = "completed"
             job["progress"] = 100
-            
-    try:
-        source_paths = job["source_videos"]
-        result = agent.process_sequence(
-            video_paths=source_paths,
-            creative_prompt=prompt,
-            reference_index=ref_idx,
-            color_profile=color_profile,
-            job_id=job_id,
-            progress_callback=on_progress
-        )
-        job["state"] = "completed"
-        job["progress"] = 100
-        job["result"] = result
-    except Exception as e:
-        job["state"] = "failed"
-        job["error"] = str(e)
-        job["events"].append(f"Error during execution: {str(e)}")
+            job["result"] = result
+        except Exception as e:
+            job["state"] = "failed"
+            job["error"] = str(e)
+            job["events"].append(f"Error during execution: {str(e)}")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "service": "Autonomous Multimodal Colorist Assistant"}
+    return {"status": "healthy", "service": "AutoGrader Autonomous Cinema Colorist"}
 
 @app.post("/api/jobs")
 def create_job():
@@ -105,67 +116,98 @@ async def upload_videos(job_id: str, files: List[UploadFile] = File(...)):
         raise HTTPException(status_code=404, detail="Job not found")
         
     job = jobs[job_id]
+    if len(job["source_videos"]) + len(files) > MAX_CLIPS_PER_JOB:
+        raise HTTPException(status_code=400, detail=f"Maximum of {MAX_CLIPS_PER_JOB} video clips allowed per job.")
+        
     job_source_dir = JOBS_DIR / job_id / "source"
-    
     uploaded_paths = []
+    
     for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported file format '{ext}'. Allowed: {ALLOWED_EXTENSIONS}")
+            
         safe_filename = Path(f.filename).name
         dest_path = job_source_dir / safe_filename
+        
+        # Save file with size enforcement
+        total_bytes = 0
         with open(dest_path, "wb") as buffer:
-            shutil.copyfileobj(f.file, buffer)
+            while chunk := await f.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > MAX_FILE_SIZE_BYTES:
+                    dest_path.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail=f"File '{safe_filename}' exceeds 500MB limit.")
+                buffer.write(chunk)
+                
+        # Validate video decoding and metadata with ffprobe
+        try:
+            info = probe_video(str(dest_path))
+            if info["width"] <= 0 or info["height"] <= 0 or info["duration_sec"] <= 0:
+                dest_path.unlink(missing_ok=True)
+                raise ValueError("Invalid video stream dimensions or duration.")
+        except Exception as e:
+            dest_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=f"Video validation failed for '{safe_filename}': {str(e)}")
+            
         dest_str = str(dest_path)
         if dest_str not in job["source_videos"]:
             job["source_videos"].append(dest_str)
         uploaded_paths.append(dest_str)
         
-    all_filenames = [Path(p).name for p in job["source_videos"]]
-    job["events"].append(f"Uploaded {len(files)} video clips: {', '.join([Path(p).name for p in uploaded_paths])}.")
-    return {
-        "status": "success",
-        "uploaded": [Path(p).name for p in uploaded_paths],
-        "all_clips": all_filenames,
-        "total_videos": len(all_filenames)
-    }
+    job["events"].append(f"Uploaded and validated {len(files)} clip(s).")
+    return {"status": "success", "uploaded": [Path(p).name for p in uploaded_paths], "total_clips": len(job["source_videos"])}
 
 @app.post("/api/jobs/{job_id}/load_demo")
-def load_demo_footage(job_id: str):
+def load_demo_sequence(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
         
     fixtures_dir = Path("tests/fixtures/sample_videos")
-    demo_files = ["neutral_reference.mp4", "underexposed.mp4", "warm_cast.mp4"]
-    
+    if not fixtures_dir.exists():
+        raise HTTPException(status_code=500, detail="Demo fixtures not found")
+        
     job = jobs[job_id]
     job_source_dir = JOBS_DIR / job_id / "source"
     
-    loaded_paths = []
-    for fname in demo_files:
-        src = fixtures_dir / fname
-        if src.exists():
-            dst = job_source_dir / fname
-            shutil.copy(src, dst)
-            loaded_paths.append(str(dst))
-            
-    job["source_videos"] = loaded_paths
-    job["events"].append("Loaded 3 demo video clips (Reference, Underexposed, Warm Cast).")
-    all_filenames = [Path(p).name for p in loaded_paths]
-    return {"status": "success", "loaded": all_filenames, "all_clips": all_filenames}
+    loaded = []
+    for sample in sorted(fixtures_dir.glob("*.mp4")):
+        dest = job_source_dir / sample.name
+        shutil.copyfile(sample, dest)
+        dest_str = str(dest)
+        if dest_str not in job["source_videos"]:
+            job["source_videos"].append(dest_str)
+        loaded.append(sample.name)
+        
+    job["events"].append(f"Loaded {len(loaded)} benchmark demo clip(s).")
+    return {"status": "success", "loaded": loaded, "all_clips": [Path(p).name for p in job["source_videos"]]}
 
 @app.post("/api/jobs/{job_id}/run")
-def start_job(job_id: str, req: RunJobRequest, background_tasks: BackgroundTasks):
+def run_job(job_id: str, request: RunJobRequest, background_tasks: BackgroundTasks):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
         
     job = jobs[job_id]
-    if not job["source_videos"]:
-        raise HTTPException(status_code=400, detail="No video files uploaded yet")
+    if len(job["source_videos"]) == 0:
+        raise HTTPException(status_code=400, detail="No source video clips uploaded")
         
-    if job["state"] == "running":
-        raise HTTPException(status_code=400, detail="Job is already running")
+    if request.reference_index is not None:
+        if request.reference_index < 0 or request.reference_index >= len(job["source_videos"]):
+            raise HTTPException(status_code=400, detail="Invalid reference_index")
+            
+    valid_profiles = {"auto", "Rec.709", "Log", "Generic Log", "dlog", "slog"}
+    if request.color_profile not in valid_profiles:
+        raise HTTPException(status_code=400, detail=f"Invalid color_profile '{request.color_profile}'. Valid options: {valid_profiles}")
         
-    job["events"].append(f"Starting grading workflow with creative prompt: '{req.creative_prompt}'")
-    background_tasks.add_task(run_agent_task, job_id, req.creative_prompt, req.reference_index, req.color_profile)
-    return {"status": "started", "job_id": job_id}
+    background_tasks.add_task(
+        run_agent_task,
+        job_id=job_id,
+        prompt=request.creative_prompt,
+        ref_idx=request.reference_index,
+        color_profile=request.color_profile
+    )
+    
+    return {"status": "queued", "job_id": job_id}
 
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):
@@ -175,24 +217,20 @@ def get_job_status(job_id: str):
 
 @app.get("/api/jobs/{job_id}/files/{filename}")
 def get_job_file(job_id: str, filename: str):
+    safe_name = Path(filename).name
     job_dir = JOBS_DIR / job_id
     
-    # Check output folder first, then source folder
-    file_path = job_dir / "output" / filename
-    if not file_path.exists():
-        file_path = job_dir / "source" / filename
-        
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"File {filename} not found")
-        
-    media_type = "video/mp4" if filename.endswith(".mp4") else "application/octet-stream"
-    return FileResponse(path=str(file_path), media_type=media_type, filename=filename)
+    cand1 = job_dir / "source" / safe_name
+    cand2 = job_dir / "output" / safe_name
+    
+    if cand1.exists():
+        return FileResponse(str(cand1))
+    elif cand2.exists():
+        return FileResponse(str(cand2))
+    else:
+        raise HTTPException(status_code=404, detail=f"File '{safe_name}' not found for job {job_id}")
 
-# Mount frontend static files
-static_dir = Path("app/static")
-if static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+# Mount static frontend
+STATIC_DIR = Path("app/static")
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

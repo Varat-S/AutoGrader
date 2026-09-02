@@ -59,3 +59,28 @@ def test_float32_cube_lut_generation(tmp_path):
     assert "LUT_3D_SIZE 17" in content
     assert "DOMAIN_MIN 0.0 0.0 0.0" in content
     assert "DOMAIN_MAX 1.0 1.0 1.0" in content
+
+def test_lut_continuous_float_precision_not_quantized_to_uint8(tmp_path):
+    plan = GradePlan(shot_id="lut_precision_test")
+    plan.creative_look.contrast = 1.15
+    plan.creative_look.highlight_rgb_offset = [-0.035, 0.012, 0.048]
+    plan.creative_look.shadow_rgb_offset = [0.045, 0.008, -0.025]
+    
+    lut_file = str(tmp_path / "test_precision.cube")
+    generate_3d_cube_lut(plan, lut_file, size=33)
+    
+    vals = []
+    with open(lut_file, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) == 3 and not line.startswith("#") and not line.startswith("LUT") and not line.startswith("TITLE") and not line.startswith("DOMAIN"):
+                try:
+                    vals.extend([float(p) for p in parts])
+                except ValueError:
+                    pass
+                    
+    vals = np.array(vals)
+    # Compute distance of (val * 255) from nearest integer
+    uint8_dist = np.abs((vals * 255.0) - np.round(vals * 255.0))
+    mean_quant_dist = np.mean(uint8_dist)
+    assert mean_quant_dist > 0.05, f"LUT values must be continuous floats, not quantized to 1/255 steps! Got {mean_quant_dist}"

@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+﻿from typing import Optional, List, Dict, Any
 import numpy as np
 from app.models.analysis import ShotMetrics, ShotSemanticAnalysis, CreativeSpecification
 from app.models.grade import (
@@ -58,18 +58,26 @@ def build_grade_plan(
     creative_spec: Optional[CreativeSpecification] = None,
     is_reference_shot: bool = False,
     is_same_scene: bool = False,
-    is_log: bool = False
+    color_profile: str = "auto",
+    matched_params: Optional[ColorGradeParams] = None
 ) -> GradePlan:
     plan = GradePlan(
         shot_id=target.shot_id,
         is_same_scene=is_same_scene
     )
     
-    # 1. INPUT TRANSFORM
-    target_is_log = bool(is_log or is_log_profile(target) or (target_semantic and "log" in target_semantic.scene_description.lower()))
+    # 1. INPUT TRANSFORM (Authoritative Precedence)
+    if color_profile == "Rec.709":
+        target_is_log = False
+    elif color_profile in ["Log", "Generic Log"]:
+        target_is_log = True
+    else:
+        # Auto: check metadata + heuristic + semantic text
+        target_is_log = bool(is_log_profile(target) or (target_semantic and "log" in target_semantic.scene_description.lower()))
+        
     plan.input_transform = InputTransformParams(
         is_log=target_is_log,
-        log_type="dlog" if (target_semantic and "dji" in target.video_path.lower()) else "generic_flat",
+        log_type="generic_flat",
         black_floor=0.11,
         white_ceil=0.95
     )
@@ -90,8 +98,11 @@ def build_grade_plan(
     
     # 3. SAME-SCENE SHOT MATCH
     if is_same_scene and not is_reference_shot:
-        # Same scene: calculate deterministic CIELAB match against reference
-        base_match = calculate_deterministic_match_params(reference, target, strength=0.90)
+        if matched_params is not None:
+            base_match = matched_params
+        else:
+            base_match = calculate_deterministic_match_params(reference, target, strength=0.90)
+            
         plan.scene_match = SceneMatchParams(
             lab_l_gain=base_match.lab_l_gain,
             lab_l_offset=base_match.lab_l_offset,
@@ -117,63 +128,54 @@ def build_grade_plan(
         look_sat = creative_spec.saturation_intent
         mist = creative_spec.black_mist_diffusion_strength
         
-        # Parse highlight & shadow biases
-        h_rgb = parse_highlight_bias_rgb(creative_spec.highlight_bias)
-        s_rgb = parse_shadow_bias_rgb(creative_spec.shadow_bias)
+        hl_bias = parse_highlight_bias_rgb(creative_spec.highlight_bias)
+        sh_bias = parse_shadow_bias_rgb(creative_spec.shadow_bias)
         toe_lift = parse_black_level_lift(creative_spec.black_level_treatment, mist)
         
-        # Temperature/tint creative bias
-        plan.technical_balance.temperature += creative_spec.temperature_shift
-        plan.technical_balance.tint += creative_spec.tint_shift
-        
         plan.creative_look = CreativeLookParams(
-            look_title=creative_spec.look_title,
             contrast=round(look_contrast, 3),
             pivot=0.45,
             saturation=round(look_sat, 3),
-            shadow_rgb_offset=s_rgb,
-            highlight_rgb_offset=h_rgb,
-            black_toe_lift=round(toe_lift, 2),
-            black_mist_strength=round(mist, 2)
+            shadow_rgb_offset=sh_bias,
+            highlight_rgb_offset=hl_bias,
+            black_toe_lift=round(toe_lift, 2)
+        )
+    else:
+        plan.creative_look = CreativeLookParams(
+            contrast=1.10,
+            pivot=0.45,
+            saturation=1.05,
+            shadow_rgb_offset=[0.05, 0.01, -0.03], # cool slate
+            highlight_rgb_offset=[-0.04, 0.01, 0.05], # warm amber
+            black_toe_lift=3.0
         )
         
-    # 5. SCENE TRIM (Preserves natural day/night scene mood)
+    # 5. SCENE-SPECIFIC TRIM (Preserves natural night/day depth)
     trim_ev = 0.0
-    trim_contrast = 1.0
-    if target_semantic and target_semantic.time_of_day == "night" and not is_same_scene:
-        # For independent night scenes: ensure rich shadow density without flattening
-        trim_contrast = 1.05
-        
+    trim_cont = 1.0
+    trim_sat = 1.0
+    trim_lift = 0.0
+    
+    if target_semantic:
+        if target_semantic.time_of_day == "night" and not is_same_scene:
+            # Preserve deep night black floor and mood
+            trim_ev -= 0.35
+            trim_cont = 1.05
+            trim_lift = 1.0
+        elif target_semantic.time_of_day == "golden_hour":
+            trim_sat = 1.05
+            
     plan.scene_trim = SceneTrimParams(
         trim_exposure_ev=round(trim_ev, 3),
-        trim_contrast=round(trim_contrast, 3),
-        trim_saturation=1.0,
-        trim_shadow_lift=0.0
+        trim_contrast=round(trim_cont, 3),
+        trim_saturation=round(trim_sat, 3),
+        trim_shadow_lift=round(trim_lift, 2)
     )
     
     # 6. OUTPUT TRANSFORM
     plan.output_transform = OutputTransformParams(
         highlight_shoulder_threshold=0.85,
-        highlight_compression_factor=2.0,
-        clip_protection=True
+        highlight_compression_factor=2.0
     )
     
     return plan
-
-def calculate_creative_grade(
-    reference: ShotMetrics,
-    target: ShotMetrics,
-    target_semantic: Optional[ShotSemanticAnalysis] = None,
-    creative_spec: Optional[CreativeSpecification] = None,
-    is_reference_shot: bool = False,
-    is_same_scene: bool = False
-) -> ColorGradeParams:
-    plan = build_grade_plan(
-        reference=reference,
-        target=target,
-        target_semantic=target_semantic,
-        creative_spec=creative_spec,
-        is_reference_shot=is_reference_shot,
-        is_same_scene=is_same_scene
-    )
-    return plan.to_legacy_params()

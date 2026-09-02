@@ -38,10 +38,9 @@ def research_cinematography_principles(
         f"{creative_prompt} cinematography color grading lighting",
         f"{creative_prompt} film stock palette colorist breakdown"
     ]
-    objective = f"Research cinematography techniques, film stock color response, filter characteristics (like Black Mist / Pro-Mist), and colorist principles for: '{creative_prompt}' in a {scene_context}."
+    objective = f"Research cinematography techniques, film stock color response, and colorist principles for: '{creative_prompt}' in a {scene_context}."
     
     if parallel_client is None:
-        # Honest fallback: Parallel API key not configured or client unavailable
         return CinematographyResearchResult(
             query=queries[0],
             objective=objective,
@@ -57,25 +56,44 @@ def research_cinematography_principles(
         )
         
         citations: List[SearchCitation] = []
-        if hasattr(search_res, "results") and search_res.results:
-            for r in search_res.results[:5]:
-                title = getattr(r, "title", "Cinematography Source") or "Cinematography Source"
-                url = getattr(r, "url", "") or ""
-                excerpt = getattr(r, "snippet", "") or getattr(r, "content", "") or ""
-                if not excerpt and hasattr(r, "highlights"):
-                    excerpt = " ".join(r.highlights) if r.highlights else ""
-                if not excerpt:
-                    excerpt = title
-                citations.append(SearchCitation(title=title, url=url, excerpt=excerpt[:400]))
+        raw_results = getattr(search_res, "results", []) or []
+        
+        for r in raw_results[:5]:
+            title = getattr(r, "title", "") or "Cinematography Source"
+            url = getattr(r, "url", "") or ""
+            
+            # Primary SDK schema: r.excerpts is list[str]
+            raw_excerpts = getattr(r, "excerpts", None)
+            excerpt = ""
+            if isinstance(raw_excerpts, list) and len(raw_excerpts) > 0:
+                excerpt = " ".join([str(e).strip() for e in raw_excerpts if str(e).strip()])
+            elif isinstance(raw_excerpts, str) and raw_excerpts.strip():
+                excerpt = raw_excerpts.strip()
+            else:
+                # Compatibility fallback for alternate/older response shapes
+                snippet = getattr(r, "snippet", None) or getattr(r, "content", None)
+                if snippet and str(snippet).strip():
+                    excerpt = str(snippet).strip()
+                elif hasattr(r, "highlights") and r.highlights:
+                    excerpt = " ".join(r.highlights)
+                    
+            # Strict grounding criteria: Do NOT substitute title as evidence
+            if excerpt and url and (url.startswith("http://") or url.startswith("https://")):
+                citations.append(SearchCitation(
+                    title=str(title).strip() or "Cinematography Reference",
+                    url=str(url).strip(),
+                    excerpt=str(excerpt)[:400]
+                ))
                 
+        is_grounded = (len(citations) > 0)
         return CinematographyResearchResult(
             query=queries[0],
             objective=objective,
             sources=citations,
-            is_grounded=len(citations) > 0
+            is_grounded=is_grounded
         )
     except Exception as e:
-        print(f"[Parallel] Grounding search failed: {e}")
+        print(f"[Parallel] Research search failed: {e}")
         # Never fabricate citations on error
         return CinematographyResearchResult(
             query=queries[0],
@@ -107,14 +125,14 @@ User Prompt: "{creative_prompt}"
 
 Synthesize this into a technical CreativeSpecification:
 1. Translate artistic descriptions into numeric values:
-   - contrast_intent: 0.90 to 1.30 (if Black Mist / Pro-Mist is requested, soften contrast slightly to ~0.95 - 1.05).
+   - contrast_intent: 0.90 to 1.30 (if Black-Mist-inspired tonal response is requested, soften contrast slightly to ~0.95 - 1.05).
    - saturation_intent: 0.70 to 1.30.
    - temperature_shift: -25.0 to +25.0.
    - tint_shift: -15.0 to +15.0.
-   - black_mist_diffusion_strength: 0.0 to 1.0 (set >0.4 if mist, diffusion, or halation is requested).
+   - black_mist_diffusion_strength: 0.0 to 1.0 (tonal toe lift parameter).
 2. Explicitly specify highlight bias (e.g. warm amber, cool cyan), shadow bias (e.g. cool slate, deep teal), and black level treatment (e.g. filmic lifted, deep crushed).
 3. Extract 2-4 key cinematography principles.
-4. Output JSON adhering to the CreativeSpecification schema.
+4. Output strictly conforming JSON matching the schema.
 """
     
     for attempt in range(max_retries):
@@ -129,7 +147,7 @@ Synthesize this into a technical CreativeSpecification:
                 )
             )
             spec: CreativeSpecification = response.parsed
-            spec.citations = research_result.sources
+            spec.citations = research_result.sources if research_result.is_grounded else []
             return spec
         except Exception as e:
             if attempt == max_retries - 1:
@@ -146,6 +164,6 @@ Synthesize this into a technical CreativeSpecification:
                     tint_shift=-2.0,
                     black_mist_diffusion_strength=0.2,
                     cinematography_principles=["Preserve highlight roll-off", "Complementary warm-cool color separation"],
-                    citations=research_result.sources
+                    citations=research_result.sources if research_result.is_grounded else []
                 )
             time.sleep(1.0)

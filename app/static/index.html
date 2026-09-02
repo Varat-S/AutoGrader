@@ -53,8 +53,8 @@
                             <line x1="12" y1="3" x2="12" y2="15"></line>
                         </svg>
                         <p class="dropzone-text"><strong>Drag and drop video clips here</strong></p>
-                        <p class="dropzone-sub">Supports .mp4 and .mov (Rec.709, Log, Cinema DNG)</p>
-                        <input type="file" id="file-input" multiple accept="video/mp4,video/quicktime" style="display:none">
+                        <p class="dropzone-sub">Supports .mp4, .mov, .mkv, .webm (Rec.709 or Log) — Max 4 clips, 500MB each</p>
+                        <input type="file" id="file-input" multiple accept="video/mp4,video/quicktime,video/x-matroska,video/webm" style="display:none">
                     </div>
                 </div>
 
@@ -87,15 +87,15 @@
             <div class="creative-prompt-area">
                 <div class="form-group">
                     <label for="creative-prompt">Creative Direction & Aesthetic Intent</label>
-                    <textarea id="creative-prompt" class="form-control prompt-input" rows="2" placeholder="Specify film stock, lighting style, or diffusion intent...">Kodak Portra 800 film stock emulation with Black Mist filter diffusion, warm golden highlights, rich skin tones</textarea>
+                    <textarea id="creative-prompt" class="form-control prompt-input" rows="2" placeholder="Specify film stock, lighting style, or diffusion intent...">Kodak Portra 800 film stock emulation with warm golden highlights, rich shadows</textarea>
                 </div>
                 
                 <div class="prompt-chips">
                     <span class="chip-label">Presets:</span>
-                    <button class="chip" data-prompt="Kodak Portra 800 film stock emulation with Black Mist filter diffusion, warm golden highlights, rich skin tones">Portra 800 + Black Mist</button>
-                    <button class="chip" data-prompt="Restrained desert science-fiction aesthetic. Warm golden highlights, muted saturation, natural skin, cool slate shadows.">Dune Sci-Fi</button>
+                    <button class="chip" data-prompt="Kodak Portra 800 film stock emulation with warm golden highlights, rich shadows">Portra 800 Look</button>
+                    <button class="chip" data-prompt="Restrained desert science-fiction aesthetic. Warm golden highlights, muted saturation, cool slate shadows.">Dune Sci-Fi</button>
                     <button class="chip" data-prompt="Moody neo-noir cyberpunk aesthetic with vibrant neon cyan and magenta rim lighting, deep blacks, high contrast.">Neo-Noir</button>
-                    <button class="chip" data-prompt="Lush natural golden hour lighting with warm amber tones, gentle contrast, and rich healthy skin rendering.">Golden Hour</button>
+                    <button class="chip" data-prompt="Lush natural golden hour lighting with warm amber tones, gentle contrast, and rich healthy shadows.">Golden Hour</button>
                     <button class="chip" data-prompt="High-contrast desaturated military thriller bleach bypass look with gritty textures and cold metallic shadows.">Bleach Bypass</button>
                 </div>
             </div>
