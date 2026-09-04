@@ -142,7 +142,7 @@ Synthesize this into a technical CreativeSpecification:
         "gemini-3.6-flash",
         "gemini-flash-latest",
         "gemini-3.5-flash",
-        "gemini-2.5-flash"
+        "gemini-flash-lite-latest"
     ]
     
     last_error = None
@@ -165,18 +165,28 @@ Synthesize this into a technical CreativeSpecification:
             except Exception as e:
                 last_error = e
                 err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
+                if "prepayment credits are depleted" in err_str.lower():
+                    # Billing account depletion cannot be resolved by immediate retries
+                    break
+                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
                     time.sleep(1.5 * (attempt + 1))
                 else:
                     break
 
     # If all models in cascade fail, report and use deterministic neutral fallback
-    print(f"[Synthesizer Warning] All creative synthesis models failed: {last_error}. Using neutral baseline.")
+    fallback_reason = str(last_error) if last_error else "Model unavailable"
+    if "prepayment credits are depleted" in fallback_reason.lower():
+        fallback_reason = (
+            "Google AI Studio prepayment credits depleted ($0 balance). "
+            "Generate a free API key at https://aistudio.google.com/app/apikey in a new project."
+        )
+
+    print(f"[Synthesizer Warning] All creative synthesis models failed: {fallback_reason}. Using neutral baseline.")
     return CreativeSpecification(
         look_title="Neutral Photographic Baseline",
         target_aesthetic=creative_prompt,
         synthesis_mode="fallback",
-        fallback_reason=str(last_error) if last_error else "Model unavailable",
+        fallback_reason=fallback_reason,
         contrast_intent=1.0,
         saturation_intent=1.0,
         highlight_bias="neutral",

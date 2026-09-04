@@ -84,7 +84,7 @@ Return strictly conforming JSON matching the schema.
         "gemini-3.6-flash",
         "gemini-flash-latest",
         "gemini-3.5-flash",
-        "gemini-2.5-flash"
+        "gemini-flash-lite-latest"
     ]
     last_error = None
     
@@ -139,7 +139,10 @@ Return strictly conforming JSON matching the schema.
             except Exception as e:
                 last_error = e
                 err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                if "prepayment credits are depleted" in err_str.lower():
+                    # Billing exhaustion cannot be resolved by immediate retries
+                    break
+                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                     wait_time = 3 * (attempt + 1)
                     print(f"[{model_name}] Rate limit hit. Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
@@ -147,9 +150,16 @@ Return strictly conforming JSON matching the schema.
                     break
                     
     # Categorized error reporting
-    if "API_KEY_INVALID" in str(last_error) or "401" in str(last_error):
+    err_str = str(last_error)
+    if "prepayment credits are depleted" in err_str.lower():
+        raise PermissionError(
+            "Gemini API Error: Google AI Studio prepayment credits are depleted ($0 balance). "
+            "Please create a free-tier API key in a clean project at https://aistudio.google.com/app/apikey "
+            "(select 'Create in new project' without billing), and update GEMINI_API_KEY in .env."
+        )
+    elif "API_KEY_INVALID" in err_str or "401" in err_str:
         raise PermissionError(f"Gemini API authentication failed: {last_error}")
-    elif "429" in str(last_error) or "RESOURCE_EXHAUSTED" in str(last_error):
+    elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
         raise RuntimeError(f"Gemini API rate limit exceeded: {last_error}")
     else:
         raise RuntimeError(f"Gemini footage inspection failed ({type(last_error).__name__}): {last_error}")
