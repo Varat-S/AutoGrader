@@ -80,7 +80,12 @@ Return strictly conforming JSON matching the schema.
         temperature=0.2,
     )
 
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "models/gemini-3.5-flash"]
+    models_to_try = [
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash"
+    ]
     last_error = None
     
     for model_name in models_to_try:

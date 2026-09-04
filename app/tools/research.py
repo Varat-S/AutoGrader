@@ -125,47 +125,68 @@ User Prompt: "{creative_prompt}"
 
 Synthesize this into a technical CreativeSpecification:
 1. Translate artistic descriptions into numeric values:
-   - contrast_intent: 0.90 to 1.30 (if Black-Mist-inspired tonal response is requested, soften contrast slightly to ~0.95 - 1.05).
-   - saturation_intent: 0.70 to 1.30.
+   - contrast_intent: 0.90 to 1.35 (for high-contrast neo-noir/cyberpunk, use 1.15 to 1.30; for soft film stocks, use 0.95 to 1.05).
+   - saturation_intent: 0.70 to 1.40 (for vivid neo-noir/cyberpunk, use 1.10 to 1.30; for muted bleach bypass, use 0.60 to 0.85).
    - temperature_shift: -25.0 to +25.0.
    - tint_shift: -15.0 to +15.0.
    - black_mist_diffusion_strength: 0.0 to 1.0 (tonal toe lift parameter).
-2. Explicitly specify highlight bias (e.g. warm amber, cool cyan), shadow bias (e.g. cool slate, deep teal), and black level treatment (e.g. filmic lifted, deep crushed).
-3. Extract 2-4 key cinematography principles.
-4. Output strictly conforming JSON matching the schema.
+2. Explicitly specify highlight bias (e.g. warm amber, cool cyan), shadow bias (e.g. cool slate, deep magenta), and black level treatment (e.g. filmic lifted, deep crushed).
+3. Compute direct normalized RGB offsets for highlights and shadows in [B, G, R] format with components between -0.15 and +0.15:
+   - highlight_rgb_offset: e.g. [0.06, 0.04, -0.05] for cyan highlights, [-0.04, 0.01, 0.05] for warm amber.
+   - shadow_rgb_offset: e.g. [0.06, -0.03, 0.05] for magenta/purple shadows, [0.05, 0.01, -0.03] for cool teal.
+4. Extract 2-4 key cinematography principles.
+5. Output strictly conforming JSON matching the schema.
 """
     
-    for attempt in range(max_retries):
-        try:
-            response = genai_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=CreativeSpecification,
-                    temperature=0.2
+    models_to_try = [
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash"
+    ]
+    
+    last_error = None
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                response = genai_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=CreativeSpecification,
+                        temperature=0.2
+                    )
                 )
-            )
-            spec: CreativeSpecification = response.parsed
-            spec.synthesis_mode = "grounded" if research_result.is_grounded else "ungrounded"
-            spec.citations = research_result.sources if research_result.is_grounded else []
-            return spec
-        except Exception as e:
-            if attempt == max_retries - 1:
-                # Deterministic neutral fallback specification
-                return CreativeSpecification(
-                    look_title="Neutral Photographic Baseline",
-                    target_aesthetic=creative_prompt,
-                    synthesis_mode="fallback",
-                    contrast_intent=1.0,
-                    saturation_intent=1.0,
-                    highlight_bias="neutral",
-                    shadow_bias="neutral",
-                    black_level_treatment="neutral",
-                    temperature_shift=0.0,
-                    tint_shift=0.0,
-                    black_mist_diffusion_strength=0.0,
-                    cinematography_principles=["Preserve source dynamic range", "Neutral color reproduction"],
-                    citations=research_result.sources if research_result.is_grounded else []
-                )
-            time.sleep(1.0)
+                spec: CreativeSpecification = response.parsed
+                spec.synthesis_mode = "grounded" if research_result.is_grounded else "ungrounded"
+                spec.citations = research_result.sources if research_result.is_grounded else []
+                return spec
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
+                    time.sleep(1.5 * (attempt + 1))
+                else:
+                    break
+
+    # If all models in cascade fail, report and use deterministic neutral fallback
+    print(f"[Synthesizer Warning] All creative synthesis models failed: {last_error}. Using neutral baseline.")
+    return CreativeSpecification(
+        look_title="Neutral Photographic Baseline",
+        target_aesthetic=creative_prompt,
+        synthesis_mode="fallback",
+        fallback_reason=str(last_error) if last_error else "Model unavailable",
+        contrast_intent=1.0,
+        saturation_intent=1.0,
+        highlight_bias="neutral",
+        shadow_bias="neutral",
+        highlight_rgb_offset=[0.0, 0.0, 0.0],
+        shadow_rgb_offset=[0.0, 0.0, 0.0],
+        black_level_treatment="neutral",
+        temperature_shift=0.0,
+        tint_shift=0.0,
+        black_mist_diffusion_strength=0.0,
+        cinematography_principles=["Preserve source dynamic range", "Neutral color reproduction"],
+        citations=research_result.sources if research_result.is_grounded else []
+    )

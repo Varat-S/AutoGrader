@@ -151,7 +151,11 @@ class AutonomousColoristAgent:
             research_result=research_result
         )
         if creative_spec.synthesis_mode == "fallback":
-            log_event("Creative synthesis fell back to neutral photographic standard (no artificial color bias).")
+            reason = getattr(creative_spec, "fallback_reason", None)
+            if reason:
+                log_event(f"  [API Quota/Availability Notice] Creative synthesis fell back to neutral standard: {reason[:140]}")
+            else:
+                log_event("Creative synthesis fell back to neutral photographic standard (no artificial color bias).")
         else:
             log_event(f"Synthesized Look ({creative_spec.synthesis_mode}): '{creative_spec.look_title}' (Contrast: {creative_spec.contrast_intent}x, Saturation: {creative_spec.saturation_intent}x, Highlights: {creative_spec.highlight_bias}, Shadows: {creative_spec.shadow_bias})")
         

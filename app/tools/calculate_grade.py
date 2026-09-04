@@ -18,10 +18,12 @@ def parse_highlight_bias_rgb(bias_text: str) -> List[float]:
     text = bias_text.lower()
     if "amber" in text or "warm" in text or "golden" in text or "yellow" in text:
         return [-0.04, 0.01, 0.05] # Warm amber (Red up, Blue down)
-    elif "cyan" in text or "cool" in text or "blue" in text:
-        return [0.04, 0.01, -0.04] # Cool cyan
-    elif "magenta" in text or "pink" in text:
-        return [0.03, -0.02, 0.04]
+    elif "cyan" in text or "neon cyan" in text:
+        return [0.06, 0.03, -0.05] # Vivid cyan (Blue & Green up, Red down)
+    elif "cool" in text or "blue" in text:
+        return [0.05, 0.01, -0.04] # Cool blue
+    elif "magenta" in text or "pink" in text or "purple" in text:
+        return [0.05, -0.03, 0.05]
     elif "green" in text:
         return [-0.02, 0.04, -0.02]
     return [0.0, 0.0, 0.0]
@@ -35,8 +37,8 @@ def parse_shadow_bias_rgb(bias_text: str) -> List[float]:
         return [-0.04, 0.0, 0.04] # Warm shadows
     elif "green" in text:
         return [-0.02, 0.03, -0.02]
-    elif "magenta" in text:
-        return [0.03, -0.02, 0.03]
+    elif "magenta" in text or "purple" in text or "violet" in text:
+        return [0.06, -0.03, 0.05] # Deep magenta/purple shadows
     return [0.0, 0.0, 0.0]
 
 def parse_black_level_lift(treatment_text: str, mist_strength: float = 0.0) -> float:
@@ -148,8 +150,16 @@ def build_grade_plan(
         look_sat = creative_spec.saturation_intent
         mist = creative_spec.black_mist_diffusion_strength
         
-        hl_bias = parse_highlight_bias_rgb(creative_spec.highlight_bias)
-        sh_bias = parse_shadow_bias_rgb(creative_spec.shadow_bias)
+        if getattr(creative_spec, "highlight_rgb_offset", None) and len(creative_spec.highlight_rgb_offset) == 3:
+            hl_bias = [float(np.clip(x, -0.15, 0.15)) for x in creative_spec.highlight_rgb_offset]
+        else:
+            hl_bias = parse_highlight_bias_rgb(creative_spec.highlight_bias)
+            
+        if getattr(creative_spec, "shadow_rgb_offset", None) and len(creative_spec.shadow_rgb_offset) == 3:
+            sh_bias = [float(np.clip(x, -0.15, 0.15)) for x in creative_spec.shadow_rgb_offset]
+        else:
+            sh_bias = parse_shadow_bias_rgb(creative_spec.shadow_bias)
+            
         toe_lift = parse_black_level_lift(creative_spec.black_level_treatment, mist)
         
         plan.creative_look = CreativeLookParams(
