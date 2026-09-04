@@ -66,13 +66,34 @@
                 </div>
             </div>
 
+            <!-- ADVISORY WARNING BANNER (P0-C) -->
+            <div id="profile-warning-banner" class="advisory-banner" style="display:none;">
+                <div class="banner-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                </div>
+                <div class="banner-content">
+                    <strong id="banner-title">Input Profile Advisory Warning</strong>
+                    <p id="banner-message">Potential profile mismatch detected.</p>
+                </div>
+                <div class="banner-actions">
+                    <button id="btn-banner-fix" class="btn btn-secondary" style="font-size:0.75rem; padding:0.35rem 0.75rem;">Apply Detected</button>
+                    <button id="btn-banner-dismiss" class="btn" style="font-size:0.75rem; padding:0.35rem 0.75rem; background:transparent;">Dismiss</button>
+                </div>
+            </div>
+
             <div class="grading-settings-grid">
                 <div class="form-group">
-                    <label for="color-profile-select">Color Space Profile</label>
+                    <label for="color-profile-select">Sequence Color Profile Default</label>
                     <select id="color-profile-select" class="form-control">
-                        <option value="auto" selected>Auto-detect (Auto CST for Log or Rec.709)</option>
-                        <option value="Log">Generic Log / Flat Normalization (Experimental)</option>
-                        <option value="Rec.709">Standard Rec.709</option>
+                        <option value="auto" selected>Auto-detect (Per-Shot Metadata & Signal Analysis)</option>
+                        <option value="rec709">Rec.709 / Display Ready</option>
+                        <option value="sony_slog3_sgamut3cine">Sony S-Log3 / S-Gamut3.Cine</option>
+                        <option value="apple_log_apple_wide_gamut">Apple Log / Apple Wide Gamut</option>
+                        <option value="generic_log_experimental">Generic Log / Flat Normalization (Experimental)</option>
                     </select>
                 </div>
 

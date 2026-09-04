@@ -1,4 +1,4 @@
-﻿# 🎨 AutoGrader — Autonomous Multimodal Cinema Colorist
+# 🎨 AutoGrader — Autonomous Multimodal Cinema Colorist
 
 > **Autonomous Multimodal Colorist for Film & Video Production**  
 > *Google Cloud "Agentic Cinema: The Blockbuster Hackathon" — Parallel (Search & Web Intelligence Track)*
@@ -47,9 +47,9 @@ flowchart TD
     end
 
     subgraph StagedGrading ["3. Staged Colorist Pipeline (GradePlan)"]
-        InNorm["1. Input Transform (Authoritative Rec.709 vs Generic Log)"]
+        InNorm["1. Input Transform (Authoritative Sony S-Log3, Apple Log, Generic Log, Rec.709)"]
         TechBal["2. Per-Shot Technical Balance (Exposure EV & Primary WB)"]
-        SceneMatch["3. Same-Scene CIELAB Match (Only for same_scene)"]
+        SceneMatch["3. Same-Scene CIELAB Match (Balanced Intermediates)"]
         LookNode["4. Shared Creative Look (Highlight/Shadow Split Tints & Filmic Contrast)"]
         SceneTrim["5. Scene Trim (Preserves Night Scene Depth & Ambience)"]
         OutNode["6. Output Transform (Shoulder Roll-off & Clipping Guard)"]

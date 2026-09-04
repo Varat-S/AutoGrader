@@ -59,7 +59,7 @@ For EACH shot independently analyze:
 4. Lighting environment (outdoor daylight, direct sun, overcast, golden hour, indoor tungsten, night blue ambient, etc.).
 5. Time of day (day, night, golden_hour, dusk, dawn).
 6. Exposure assessment (balanced, underexposed, overexposed, high_key, low_key).
-7. Target exposure compensation in EV stops (-2.0 to +2.0) needed to optimize this specific shot's dynamic range.
+7. Target exposure compensation in EV stops (-2.0 to +2.0) needed to optimize this specific shot's dynamic range. STRICT CONVENTION: positive values (+0.5 to +2.0) to brighten underexposed footage, negative values (-0.5 to -2.0) to darken overexposed footage, 0.0 for balanced.
 8. Black point lift (0.0 to 15.0) for filmic shadow toe density.
 9. Presence of human subjects (people_present: true/false).
 10. Dominant color temperature or cast.

@@ -1,6 +1,6 @@
-﻿from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
-from app.models.analysis import ShotMetrics, ShotSemanticAnalysis, CreativeSpecification
+from app.models.analysis import ShotMetrics, ShotSemanticAnalysis, CreativeSpecification, InputProfileAssessment
 from app.models.grade import (
     GradePlan,
     ColorGradeParams,
@@ -67,16 +67,27 @@ def build_grade_plan(
     )
     
     # 1. INPUT TRANSFORM (Authoritative Precedence)
-    if color_profile == "Rec.709":
+    p_lower = color_profile.lower().strip()
+    if p_lower in ["rec709", "rec.709", "bt709", "srgb", "display"]:
         target_is_log = False
-    elif color_profile in ["Log", "Generic Log"]:
+        resolved_profile = "rec709"
+    elif "slog3" in p_lower or "s_log3" in p_lower:
         target_is_log = True
+        resolved_profile = "sony_slog3_sgamut3cine"
+    elif "apple" in p_lower:
+        target_is_log = True
+        resolved_profile = "apple_log_apple_wide_gamut"
+    elif p_lower in ["log", "generic log", "generic_log_experimental", "flat"]:
+        target_is_log = True
+        resolved_profile = "generic_log_experimental"
     else:
         # Auto: check metadata + heuristic + semantic text
         target_is_log = bool(is_log_profile(target) or (target_semantic and "log" in target_semantic.scene_description.lower()))
+        resolved_profile = "generic_log_experimental" if target_is_log else "rec709"
         
     plan.input_transform = InputTransformParams(
         is_log=target_is_log,
+        profile=resolved_profile,
         log_type="generic_flat",
         black_floor=0.11,
         white_ceil=0.95
@@ -88,7 +99,16 @@ def build_grade_plan(
     tint = 0.0
     
     if target_semantic:
-        exposure_ev += target_semantic.target_exposure_compensation_ev
+        # Positive exposure adjustment = brighten, negative = darken
+        rec_ev = getattr(target_semantic, "recommended_exposure_adjustment_ev", None)
+        if rec_ev is not None and abs(rec_ev) > 0.001:
+            exposure_ev += rec_ev
+        else:
+            exposure_ev += target_semantic.target_exposure_compensation_ev
+            
+    if creative_spec:
+        temp += creative_spec.temperature_shift
+        tint += creative_spec.tint_shift
         
     plan.technical_balance = TechnicalBalanceParams(
         exposure_ev=round(exposure_ev, 3),
@@ -133,6 +153,7 @@ def build_grade_plan(
         toe_lift = parse_black_level_lift(creative_spec.black_level_treatment, mist)
         
         plan.creative_look = CreativeLookParams(
+            look_title=creative_spec.look_title,
             contrast=round(look_contrast, 3),
             pivot=0.45,
             saturation=round(look_sat, 3),
@@ -141,13 +162,15 @@ def build_grade_plan(
             black_toe_lift=round(toe_lift, 2)
         )
     else:
+        # Neutral baseline with zero artificial color bias
         plan.creative_look = CreativeLookParams(
-            contrast=1.10,
+            look_title="Neutral Photographic Baseline",
+            contrast=1.0,
             pivot=0.45,
-            saturation=1.05,
-            shadow_rgb_offset=[0.05, 0.01, -0.03], # cool slate
-            highlight_rgb_offset=[-0.04, 0.01, 0.05], # warm amber
-            black_toe_lift=3.0
+            saturation=1.0,
+            shadow_rgb_offset=[0.0, 0.0, 0.0],
+            highlight_rgb_offset=[0.0, 0.0, 0.0],
+            black_toe_lift=0.0
         )
         
     # 5. SCENE-SPECIFIC TRIM (Preserves natural night/day depth)
@@ -179,3 +202,77 @@ def build_grade_plan(
     )
     
     return plan
+
+def assess_input_profile(
+    shot_id: str,
+    probed_info: Dict[str, Any],
+    metrics: ShotMetrics,
+    requested_profile: Optional[str] = None
+) -> InputProfileAssessment:
+    """Calculates an advisory profile assessment and safety mismatch check."""
+    transfer = str(probed_info.get("color_transfer", "")).lower()
+    path_lower = str(probed_info.get("path", "")).lower()
+    
+    metadata_hint = "unknown"
+    if "slog3" in transfer or "s_log3" in transfer or "slog3" in path_lower:
+        metadata_hint = "sony_slog3_sgamut3cine"
+    elif "apple" in transfer or "apple" in path_lower:
+        metadata_hint = "apple_log_apple_wide_gamut"
+    elif "bt709" in transfer or "iec61966" in transfer:
+        metadata_hint = "rec709"
+        
+    p5 = metrics.p5_luminance if metrics.p5_luminance > 0 else (metrics.sampled_frames[0].p5_luminance if metrics.sampled_frames else 0.0)
+    p25 = metrics.p25_luminance if metrics.p25_luminance > 0 else (metrics.sampled_frames[0].p25_luminance if metrics.sampled_frames else 0.0)
+    p75 = metrics.p75_luminance if metrics.p75_luminance > 0 else (metrics.sampled_frames[0].p75_luminance if metrics.sampled_frames else 0.0)
+    iqr = p75 - p25
+    chroma = metrics.avg_chroma
+    
+    reasons = []
+    if p5 > 38.0:
+        reasons.append(f"elevated black floor (p5={p5:.1f})")
+    if iqr < 55.0:
+        reasons.append(f"compressed upper tonal range (IQR={iqr:.1f})")
+    if chroma < 12.0:
+        reasons.append(f"low baseline chroma ({chroma:.1f})")
+        
+    if len(reasons) >= 2:
+        signal_class_hint = "log_like"
+        confidence = 0.85
+    elif len(reasons) == 1:
+        signal_class_hint = "ambiguous"
+        confidence = 0.60
+    else:
+        signal_class_hint = "display_ready"
+        confidence = 0.80
+        
+    selected = (requested_profile or "rec709").strip()
+    if selected == "auto":
+        selected = metadata_hint if metadata_hint != "unknown" else ("generic_log_experimental" if signal_class_hint == "log_like" else "rec709")
+        
+    mismatch = False
+    warning_msg = None
+    
+    if selected in ["rec709", "Rec.709"] and signal_class_hint == "log_like":
+        mismatch = True
+        warning_msg = (
+            f"Possible Log footage detected in {shot_id}. "
+            f"This clip has an elevated black floor (p5={p5:.1f}), compressed highlights, and flat tonal distribution. "
+            f"You selected Rec.709. Choose the camera profile if known."
+        )
+    elif selected not in ["rec709", "Rec.709", "auto_ask"] and signal_class_hint == "display_ready" and p5 < 15.0 and chroma > 16.0:
+        mismatch = True
+        warning_msg = (
+            f"Clip {shot_id} appears display-ready (Rec.709). "
+            f"Applying Log profile '{selected}' may crush shadow details or oversaturate the image."
+        )
+        
+    return InputProfileAssessment(
+        shot_id=shot_id,
+        selected_profile=selected,
+        metadata_hint=metadata_hint,
+        signal_class_hint=signal_class_hint,
+        confidence=round(confidence, 2),
+        reasons=reasons,
+        profile_mismatch_warning=mismatch,
+        warning_message=warning_msg
+    )

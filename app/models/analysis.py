@@ -1,5 +1,22 @@
-from typing import List, Optional
+from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
+
+class InputProfileAssessment(BaseModel):
+    shot_id: str
+    selected_profile: str
+    metadata_hint: str = "unknown"
+    signal_class_hint: Literal["display_ready", "log_like", "ambiguous"] = "display_ready"
+    confidence: float = 0.5
+    reasons: List[str] = Field(default_factory=list)
+    profile_mismatch_warning: bool = False
+    warning_message: Optional[str] = None
+
+class NormalizationValidationResult(BaseModel):
+    shot_id: str
+    state: Literal["NORMALIZATION_VERIFIED", "PROFILE_CONFIRMATION_REQUIRED", "NORMALIZATION_WARNING_OVERRIDDEN", "NORMALIZATION_FAILED"]
+    passed: bool
+    reason: str
+    metrics_summary: Dict[str, Any] = Field(default_factory=dict)
 
 class FrameMetrics(BaseModel):
     timestamp_sec: float
@@ -52,7 +69,8 @@ class ShotSemanticAnalysis(BaseModel):
     lighting_environment: str = Field(..., description="e.g. outdoor daylight, golden hour, overcast, indoor tungsten, mixed")
     time_of_day: str = Field(..., description="e.g. day, night, golden_hour, dusk, dawn")
     exposure_assessment: str = Field("balanced", description="e.g. balanced, underexposed, overexposed, high_key, low_key")
-    target_exposure_compensation_ev: float = Field(0.0, ge=-2.0, le=2.0, description="Recommended exposure adjustment in EV stops for this specific scene")
+    recommended_exposure_adjustment_ev: float = Field(0.0, ge=-4.0, le=4.0, description="Recommended exposure adjustment in EV stops (positive = brighten, negative = darken)")
+    target_exposure_compensation_ev: float = Field(0.0, ge=-4.0, le=4.0, description="Legacy alias for recommended_exposure_adjustment_ev (positive = brighten, negative = darken)")
     black_point_lift: float = Field(0.0, ge=0.0, le=20.0, description="Shadow toe lift to emulate soft filmic shadow density")
     people_present: bool = Field(False, description="True if human subjects are present in frame")
     dominant_color_cast: str = Field(..., description="Visual perception of color temperature or tint")
@@ -81,6 +99,7 @@ class CinematographyResearchResult(BaseModel):
 class CreativeSpecification(BaseModel):
     look_title: str
     target_aesthetic: str
+    synthesis_mode: Literal["grounded", "ungrounded", "fallback"] = Field("ungrounded", description="Provenance of the creative specification")
     contrast_intent: float = Field(1.0, ge=0.5, le=1.8, description="Target contrast multiplier")
     saturation_intent: float = Field(1.0, ge=0.0, le=2.0, description="Target saturation multiplier")
     highlight_bias: str = Field("neutral", description="e.g. warm amber, neutral, soft golden")

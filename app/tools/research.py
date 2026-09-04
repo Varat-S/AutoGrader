@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import time
 from typing import List, Optional
@@ -147,23 +147,25 @@ Synthesize this into a technical CreativeSpecification:
                 )
             )
             spec: CreativeSpecification = response.parsed
+            spec.synthesis_mode = "grounded" if research_result.is_grounded else "ungrounded"
             spec.citations = research_result.sources if research_result.is_grounded else []
             return spec
         except Exception as e:
             if attempt == max_retries - 1:
-                # Deterministic fallback spec
+                # Deterministic neutral fallback specification
                 return CreativeSpecification(
-                    look_title="Cinematic Film Look",
+                    look_title="Neutral Photographic Baseline",
                     target_aesthetic=creative_prompt,
-                    contrast_intent=1.10,
-                    saturation_intent=1.05,
-                    highlight_bias="warm golden",
-                    shadow_bias="cool slate",
-                    black_level_treatment="filmic lifted",
-                    temperature_shift=4.0,
-                    tint_shift=-2.0,
-                    black_mist_diffusion_strength=0.2,
-                    cinematography_principles=["Preserve highlight roll-off", "Complementary warm-cool color separation"],
+                    synthesis_mode="fallback",
+                    contrast_intent=1.0,
+                    saturation_intent=1.0,
+                    highlight_bias="neutral",
+                    shadow_bias="neutral",
+                    black_level_treatment="neutral",
+                    temperature_shift=0.0,
+                    tint_shift=0.0,
+                    black_mist_diffusion_strength=0.0,
+                    cinematography_principles=["Preserve source dynamic range", "Neutral color reproduction"],
                     citations=research_result.sources if research_result.is_grounded else []
                 )
             time.sleep(1.0)

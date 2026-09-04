@@ -1,4 +1,4 @@
-﻿import os
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
@@ -47,7 +47,7 @@ def test_production_agent_mixed_sequence_revision_state_machine(sample_video_pat
                 lighting_environment="outdoor daylight",
                 time_of_day="day",
                 exposure_assessment="underexposed",
-                target_exposure_compensation_ev=-0.8,
+                target_exposure_compensation_ev=1.5,
                 black_point_lift=2.0,
                 people_present=False,
                 dominant_color_cast="neutral",
@@ -120,7 +120,8 @@ def test_production_agent_mixed_sequence_revision_state_machine(sample_video_pat
     assert os.path.exists(shot_a["lut_path"])
     
     # 2. Shot B: Same-Scene Match
-    assert shot_b["state"] in ["ACCEPTED", "MAX_REVISIONS_REACHED"]
+    assert shot_b["state"] == "ACCEPTED"
+    assert shot_b["after_consistency"]["overall_score"] >= 75.0
     assert len(shot_b["history"]) >= 1
     assert os.path.exists(shot_b["output_video_path"])
     assert os.path.exists(shot_b["lut_path"])
@@ -201,6 +202,8 @@ def test_best_plan_retained_when_revision_is_worse(sample_video_paths, tmp_path)
         
     shot_b = result["results"][1]
     assert shot_b["plan"] is not None
+    assert shot_b["state"] in ["NO_ACTIONABLE_REVISION", "MAX_REVISIONS_REACHED"]
+    assert any(h["state"] == "REVISION_REJECTED" for h in shot_b["history"])
     # Verify bounds on all parameters
     assert -2.5 <= shot_b["plan"]["technical_balance"]["exposure_ev"] <= 2.5
     assert -40.0 <= shot_b["plan"]["technical_balance"]["temperature"] <= 40.0

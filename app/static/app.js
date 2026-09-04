@@ -15,6 +15,14 @@ const promptInput = document.getElementById("creative-prompt");
 const btnRun = document.getElementById("btn-run");
 const promptChips = document.querySelectorAll(".chip");
 
+// Advisory Warning Banner (P0-C)
+const bannerWarning = document.getElementById("profile-warning-banner");
+const bannerTitle = document.getElementById("banner-title");
+const bannerMessage = document.getElementById("banner-message");
+const btnBannerFix = document.getElementById("btn-banner-fix");
+const btnBannerDismiss = document.getElementById("btn-banner-dismiss");
+let currentAssessments = [];
+
 // Split Slider DOM Elements
 const sliderFrame = document.getElementById("slider-frame");
 const sliderDivider = document.getElementById("split-slider-divider");
@@ -74,8 +82,9 @@ function setupEventListeners() {
         try {
             const res = await fetch(`/api/jobs/${currentJobId}/load_demo`, { method: "POST" });
             const data = await res.json();
-            updateClipsList(data.loaded);
-            btnRun.disabled = false;
+            const clips = data.all_clips || data.loaded || [];
+            updateClipsList(clips);
+            btnRun.disabled = (clips.length === 0);
         } catch (e) {
             console.error("Demo load failed:", e);
         } finally {
@@ -92,27 +101,66 @@ function setupEventListeners() {
         });
     });
 
+    // Banner Actions (P0-C)
+    if (btnBannerFix) {
+        btnBannerFix.addEventListener("click", () => {
+            currentAssessments.forEach((ass, idx) => {
+                const sel = document.querySelector(`.clip-profile-select[data-shot-index="${idx}"]`);
+                if (sel && ass.selected_profile) {
+                    sel.value = ass.selected_profile;
+                    sel.dataset.userModified = "true";
+                }
+            });
+            if (bannerWarning) bannerWarning.style.display = "none";
+        });
+    }
+
+    if (btnBannerDismiss) {
+        btnBannerDismiss.addEventListener("click", () => {
+            if (bannerWarning) bannerWarning.style.display = "none";
+        });
+    }
+
     // Run Workflow
     btnRun.addEventListener("click", async () => {
-        if (!currentJobId) return;
+        if (!currentJobId || btnRun.disabled) return;
         btnRun.disabled = true;
-        document.getElementById("agent-activity-panel").style.display = "block";
-        document.getElementById("results-panel").style.display = "none";
         
         const refVal = refSelect.value === "auto" ? null : parseInt(refSelect.value);
         const colorProfileVal = colorSelect.value;
         
-        await fetch(`/api/jobs/${currentJobId}/run`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                creative_prompt: promptInput.value,
-                reference_index: refVal,
-                color_profile: colorProfileVal
-            })
+        const inputProfiles = [];
+        const shotSelects = document.querySelectorAll(".clip-profile-select");
+        shotSelects.forEach((sel, idx) => {
+            inputProfiles.push({ shot_index: idx, profile: sel.value });
         });
         
-        startPolling(currentJobId);
+        try {
+            const res = await fetch(`/api/jobs/${currentJobId}/run`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    creative_prompt: promptInput.value,
+                    reference_index: refVal,
+                    color_profile: colorProfileVal,
+                    input_profiles: inputProfiles
+                })
+            });
+            
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                alert(errData.detail || "Error starting grading job");
+                btnRun.disabled = false;
+                return;
+            }
+            
+            document.getElementById("agent-activity-panel").style.display = "block";
+            document.getElementById("results-panel").style.display = "none";
+            startPolling(currentJobId);
+        } catch (e) {
+            console.error("Run error:", e);
+            btnRun.disabled = false;
+        }
     });
 }
 
@@ -129,6 +177,11 @@ async function uploadFiles(files) {
             method: "POST",
             body: formData
         });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            alert(errData.detail || "Failed to upload video clip(s).");
+            return;
+        }
         const data = await res.json();
         const clips = data.all_clips || data.loaded || (Array.isArray(data.uploaded) ? data.uploaded : []);
         updateClipsList(clips);
@@ -150,6 +203,7 @@ function updateClipsList(filenames) {
     if (filenames.length === 0) {
         clipsList.innerHTML = '<div class="empty-state">No clips loaded yet. Drop files above or load the demo sequence.</div>';
         btnRun.disabled = true;
+        if (bannerWarning) bannerWarning.style.display = "none";
         return;
     }
     
@@ -158,19 +212,54 @@ function updateClipsList(filenames) {
         const row = document.createElement("div");
         row.className = "clip-row";
         
-        const spanText = document.createElement("span");
+        const rowLeft = document.createElement("div");
+        rowLeft.className = "clip-row-left";
+        
         const strong = document.createElement("strong");
         strong.textContent = shotId;
-        spanText.appendChild(strong);
-        spanText.appendChild(document.createTextNode(`: ${fname}`));
+        rowLeft.appendChild(strong);
+        
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "clip-row-name";
+        nameSpan.textContent = fname;
+        nameSpan.title = fname;
+        rowLeft.appendChild(nameSpan);
+        
+        const rowActions = document.createElement("div");
+        rowActions.className = "clip-row-actions";
         
         const tag = document.createElement("span");
         tag.className = "clip-tag";
-        const ext = fname.split(".").pop().toUpperCase();
-        tag.textContent = ext;
+        tag.textContent = fname.split(".").pop().toUpperCase();
+        rowActions.appendChild(tag);
         
-        row.appendChild(spanText);
-        row.appendChild(tag);
+        const sel = document.createElement("select");
+        sel.className = "clip-profile-select";
+        sel.dataset.shotIndex = idx;
+        
+        const profileOptions = [
+            { value: "auto_ask", label: "Auto-detect" },
+            { value: "rec709", label: "Rec.709 / Display" },
+            { value: "sony_slog3_sgamut3cine", label: "Sony S-Log3" },
+            { value: "apple_log_apple_wide_gamut", label: "Apple Log" },
+            { value: "generic_log_experimental", label: "Generic Log / Flat" }
+        ];
+        
+        profileOptions.forEach(optData => {
+            const opt = document.createElement("option");
+            opt.value = optData.value;
+            opt.textContent = optData.label;
+            sel.appendChild(opt);
+        });
+        
+        sel.addEventListener("change", () => {
+            sel.dataset.userModified = "true";
+        });
+        
+        rowActions.appendChild(sel);
+        
+        row.appendChild(rowLeft);
+        row.appendChild(rowActions);
         clipsList.appendChild(row);
         
         const opt = document.createElement("option");
@@ -180,6 +269,46 @@ function updateClipsList(filenames) {
     });
     
     btnRun.disabled = false;
+    
+    // Asynchronously assess input profiles and display safety warnings
+    fetchProfileAssessments();
+}
+
+async function fetchProfileAssessments() {
+    if (!currentJobId) return;
+    try {
+        const res = await fetch(`/api/jobs/${currentJobId}/assess_profiles`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === "success" && Array.isArray(data.assessments)) {
+            currentAssessments = data.assessments;
+            let hasWarning = false;
+            let warningText = "";
+            
+            data.assessments.forEach((ass, idx) => {
+                const sel = document.querySelector(`.clip-profile-select[data-shot-index="${idx}"]`);
+                if (sel && !sel.dataset.userModified) {
+                    if (ass.selected_profile && ass.selected_profile !== "rec709") {
+                        sel.value = ass.selected_profile;
+                    }
+                }
+                if (ass.profile_mismatch_warning) {
+                    hasWarning = true;
+                    warningText += `${ass.shot_id}: ${ass.warning_message} `;
+                }
+            });
+            
+            if (hasWarning && bannerWarning) {
+                bannerTitle.textContent = "Input Profile Advisory Warning";
+                bannerMessage.textContent = warningText || "Log-encoded or flat footage detected under display profile.";
+                bannerWarning.style.display = "flex";
+            } else if (bannerWarning) {
+                bannerWarning.style.display = "none";
+            }
+        }
+    } catch (e) {
+        console.warn("Could not fetch profile assessments:", e);
+    }
 }
 
 // POLLING & ACTIVITY FEED

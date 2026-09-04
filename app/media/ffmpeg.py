@@ -75,7 +75,7 @@ def probe_video(video_path: str) -> Dict[str, Any]:
         get_ffprobe_binary(),
         '-v', 'error',
         '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate,duration,codec_name,pix_fmt',
+        '-show_entries', 'stream=width,height,r_frame_rate,duration,codec_name,pix_fmt,color_primaries,color_transfer,color_space,color_range,bits_per_raw_sample',
         '-show_entries', 'format=duration,size',
         '-of', 'json',
         video_path
@@ -83,11 +83,19 @@ def probe_video(video_path: str) -> Dict[str, Any]:
     res = run_subprocess(cmd)
     data = json.loads(res.stdout)
     
-    stream = data.get('streams', [{}])[0] if data.get('streams') else {}
+    streams = data.get('streams', [])
+    if not streams:
+        raise ValueError(f"No valid video stream found in: {video_path}")
+    stream = streams[0]
     fmt = data.get('format', {})
     
-    width = int(stream.get('width', 1920))
-    height = int(stream.get('height', 1080))
+    width = int(stream.get('width', 0))
+    height = int(stream.get('height', 0))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Invalid video dimensions {width}x{height} in {video_path}")
+        
+    if width * height > 4096 * 2160:
+        raise ValueError(f"Video resolution {width}x{height} exceeds maximum supported 4K UHD ceiling (4096x2160).")
     
     r_fps = stream.get('r_frame_rate', '30/1')
     try:
@@ -97,6 +105,19 @@ def probe_video(video_path: str) -> Dict[str, Any]:
         fps = 30.0
         
     duration = float(stream.get('duration') or fmt.get('duration') or 0.0)
+    if duration <= 0.0:
+        raise ValueError(f"Invalid duration {duration}s in {video_path}")
+    if duration > 600.0:
+        raise ValueError(f"Video duration {duration:.1f}s exceeds maximum allowed 600s ceiling.")
+        
+    # Verify at least one frame decodes successfully
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Failed to open video container: {video_path}")
+    ret, test_frame = cap.read()
+    cap.release()
+    if not ret or test_frame is None or test_frame.size == 0:
+        raise ValueError(f"Corrupted video stream: failed to decode any video frames in {video_path}")
     
     return {
         'path': video_path,
@@ -106,6 +127,7 @@ def probe_video(video_path: str) -> Dict[str, Any]:
         'duration_sec': round(duration, 2),
         'codec': stream.get('codec_name', 'unknown'),
         'pix_fmt': stream.get('pix_fmt', 'unknown'),
+        'bits_per_raw_sample': stream.get('bits_per_raw_sample', 'unknown'),
         'color_primaries': stream.get('color_primaries', 'unknown'),
         'color_transfer': stream.get('color_transfer', 'unknown'),
         'color_space': stream.get('color_space', 'unknown'),

@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 import numpy as np
 from app.media.color import (
     compute_frame_metrics,
@@ -130,3 +130,72 @@ def test_night_preservation_does_not_blow_out_night_scene():
     
     assert metrics_graded.mean_luminance < 45.0, f"Night shot was blown out! Mean: {metrics_graded.mean_luminance}"
     assert metrics_graded.p5_luminance < 30.0
+
+def test_saturation_mismatch_detected_by_probes():
+    shot = aggregate_shot_metrics("s", "s.mp4", [np.full((50, 50, 3), 100, dtype=np.uint8)], [0.0], 30.0, 50, 50, 1.0)
+    
+    plan_ref = GradePlan(shot_id="ref")
+    plan_ref.creative_look.saturation = 1.0
+    
+    plan_oversat = GradePlan(shot_id="oversat")
+    plan_oversat.creative_look.saturation = 2.5
+    
+    score = compute_consistency_score(
+        reference=shot,
+        candidate=shot,
+        evaluation_mode="cross_scene_look_continuity",
+        ref_plan=plan_ref,
+        cand_plan=plan_oversat
+    )
+    assert score.distribution_similarity < 60.0 or score.chromatic_similarity < 60.0
+    assert score.overall_score < 75.0
+
+def test_contrast_mismatch_detected_by_probes():
+    shot = aggregate_shot_metrics("s", "s.mp4", [np.full((50, 50, 3), 100, dtype=np.uint8)], [0.0], 30.0, 50, 50, 1.0)
+    
+    plan_low_contrast = GradePlan(shot_id="low")
+    plan_low_contrast.creative_look.contrast = 0.5
+    
+    plan_high_contrast = GradePlan(shot_id="high")
+    plan_high_contrast.creative_look.contrast = 2.0
+    
+    score = compute_consistency_score(
+        reference=shot,
+        candidate=shot,
+        evaluation_mode="cross_scene_look_continuity",
+        ref_plan=plan_low_contrast,
+        cand_plan=plan_high_contrast
+    )
+    assert score.tonal_similarity <= 45.0
+    assert score.overall_score < 60.0
+
+def test_day_night_trims_do_not_contaminate_creative_continuity():
+    shot_day = aggregate_shot_metrics("day", "day.mp4", [np.full((50, 50, 3), 120, dtype=np.uint8)], [0.0], 30.0, 50, 50, 1.0)
+    shot_night = aggregate_shot_metrics("night", "night.mp4", [np.full((50, 50, 3), 35, dtype=np.uint8)], [0.0], 30.0, 50, 50, 1.0)
+    
+    # Identical creative look
+    plan_ref = GradePlan(shot_id="day")
+    plan_ref.creative_look.contrast = 1.15
+    plan_ref.creative_look.saturation = 1.05
+    plan_ref.creative_look.highlight_rgb_offset = [-0.04, 0.01, 0.05]
+    plan_ref.creative_look.shadow_rgb_offset = [0.05, 0.01, -0.03]
+    
+    plan_night = GradePlan(shot_id="night")
+    plan_night.creative_look.contrast = 1.15
+    plan_night.creative_look.saturation = 1.05
+    plan_night.creative_look.highlight_rgb_offset = [-0.04, 0.01, 0.05]
+    plan_night.creative_look.shadow_rgb_offset = [0.05, 0.01, -0.03]
+    # Night shot has distinct technical balance and scene trim
+    plan_night.technical_balance.exposure_ev = -1.2
+    plan_night.scene_trim.trim_exposure_ev = -0.5
+    
+    score = compute_consistency_score(
+        reference=shot_day,
+        candidate=shot_night,
+        evaluation_mode="cross_scene_look_continuity",
+        ref_plan=plan_ref,
+        cand_plan=plan_night
+    )
+    assert score.overall_score >= 80.0
+    assert score.tonal_similarity >= 80.0
+    assert score.chromatic_similarity >= 80.0

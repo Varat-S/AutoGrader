@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 
 from app.agent import AutonomousColoristAgent
 from app.media.ffmpeg import probe_video
+from app.tools.measure_color import measure_shot_color
+from app.tools.calculate_grade import assess_input_profile
 
 app = FastAPI(
     title="AutoGrader — Autonomous Multimodal Cinema Colorist",
@@ -43,9 +45,16 @@ MAX_CLIPS_PER_JOB = 4
 class RunJobRequest(BaseModel):
     creative_prompt: str = Field(..., max_length=500, description="Filmmaker aesthetic description (max 500 characters)")
     reference_index: Optional[int] = Field(None, ge=0, le=3, description="Optional 0-indexed reference clip selection")
-    color_profile: str = Field("auto", description="'auto', 'Rec.709', 'Log', or 'Generic Log'")
+    color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_apple_wide_gamut', 'generic_log_experimental'")
+    input_profiles: Optional[List[Dict[str, Any]]] = Field(None, description="Per-shot input profile selections: [{'shot_index': 0, 'profile': 'rec709'}, ...]")
 
-def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int], color_profile: str = "auto"):
+def run_agent_task(
+    job_id: str,
+    prompt: str,
+    ref_idx: Optional[int],
+    color_profile: str = "auto",
+    input_profiles: Optional[List[Dict[str, Any]]] = None
+):
     job = jobs.get(job_id)
     if not job:
         return
@@ -77,6 +86,7 @@ def run_agent_task(job_id: str, prompt: str, ref_idx: Optional[int], color_profi
                 creative_prompt=prompt,
                 reference_index=ref_idx,
                 color_profile=color_profile,
+                input_profiles=input_profiles,
                 job_id=job_id,
                 progress_callback=on_progress
             )
@@ -156,7 +166,12 @@ async def upload_videos(job_id: str, files: List[UploadFile] = File(...)):
         uploaded_paths.append(dest_str)
         
     job["events"].append(f"Uploaded and validated {len(files)} clip(s).")
-    return {"status": "success", "uploaded": [Path(p).name for p in uploaded_paths], "total_clips": len(job["source_videos"])}
+    return {
+        "status": "success",
+        "uploaded": [Path(p).name for p in uploaded_paths],
+        "all_clips": [Path(p).name for p in job["source_videos"]],
+        "total_clips": len(job["source_videos"])
+    }
 
 @app.post("/api/jobs/{job_id}/load_demo")
 def load_demo_sequence(job_id: str):
@@ -182,12 +197,43 @@ def load_demo_sequence(job_id: str):
     job["events"].append(f"Loaded {len(loaded)} benchmark demo clip(s).")
     return {"status": "success", "loaded": loaded, "all_clips": [Path(p).name for p in job["source_videos"]]}
 
+@app.get("/api/jobs/{job_id}/assess_profiles")
+def assess_job_profiles(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    job = jobs[job_id]
+    assessments = []
+    for i, path in enumerate(job["source_videos"]):
+        shot_id = f"shot_{chr(65 + i)}"
+        try:
+            info = probe_video(path)
+            metrics = measure_shot_color(path, shot_id=shot_id)
+            assessment = assess_input_profile(shot_id, info, metrics, requested_profile="auto_ask")
+            assessments.append(assessment.model_dump())
+        except Exception as e:
+            assessments.append({
+                "shot_id": shot_id,
+                "selected_profile": "rec709",
+                "metadata_hint": "error",
+                "signal_class_hint": "unknown",
+                "confidence": 0.0,
+                "reasons": [f"Failed to assess profile: {str(e)}"],
+                "profile_mismatch_warning": False,
+                "warning_message": ""
+            })
+            
+    return {"status": "success", "assessments": assessments}
+
 @app.post("/api/jobs/{job_id}/run")
 def run_job(job_id: str, request: RunJobRequest, background_tasks: BackgroundTasks):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
         
     job = jobs[job_id]
+    if job.get("state") in ["queued", "running"]:
+        raise HTTPException(status_code=400, detail=f"Job '{job_id}' is already {job['state']}. Duplicate runs are not permitted.")
+        
     if len(job["source_videos"]) == 0:
         raise HTTPException(status_code=400, detail="No source video clips uploaded")
         
@@ -195,16 +241,22 @@ def run_job(job_id: str, request: RunJobRequest, background_tasks: BackgroundTas
         if request.reference_index < 0 or request.reference_index >= len(job["source_videos"]):
             raise HTTPException(status_code=400, detail="Invalid reference_index")
             
-    valid_profiles = {"auto", "Rec.709", "Log", "Generic Log", "dlog", "slog"}
+    valid_profiles = {
+        "auto", "auto_ask", "rec709", "Rec.709", "Log", "Generic Log",
+        "sony_slog3_sgamut3cine", "apple_log_apple_wide_gamut", "generic_log_experimental",
+        "dlog", "slog"
+    }
     if request.color_profile not in valid_profiles:
         raise HTTPException(status_code=400, detail=f"Invalid color_profile '{request.color_profile}'. Valid options: {valid_profiles}")
         
+    job["state"] = "queued"
     background_tasks.add_task(
         run_agent_task,
         job_id=job_id,
         prompt=request.creative_prompt,
         ref_idx=request.reference_index,
-        color_profile=request.color_profile
+        color_profile=request.color_profile,
+        input_profiles=request.input_profiles
     )
     
     return {"status": "queued", "job_id": job_id}

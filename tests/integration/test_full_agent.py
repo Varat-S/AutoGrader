@@ -1,4 +1,4 @@
-﻿import os
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -46,7 +46,7 @@ def test_full_autonomous_colorist_agent_deterministic(sample_videos, tmp_path):
                 lighting_environment="outdoor daylight",
                 time_of_day="day",
                 exposure_assessment="underexposed",
-                target_exposure_compensation_ev=-1.0,
+                target_exposure_compensation_ev=1.2,
                 black_point_lift=2.0,
                 people_present=False,
                 dominant_color_cast="neutral",
