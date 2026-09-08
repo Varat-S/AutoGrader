@@ -81,10 +81,11 @@ Return strictly conforming JSON matching the schema.
     )
 
     models_to_try = [
-        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
         "gemini-flash-latest",
+        "gemini-flash-lite-latest",
         "gemini-3.5-flash",
-        "gemini-flash-lite-latest"
+        "gemini-3.6-flash"
     ]
     last_error = None
     
