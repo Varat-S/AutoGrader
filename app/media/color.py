@@ -169,7 +169,7 @@ def linear_to_sony_slog3(x: np.ndarray) -> np.ndarray:
         ((x * 171.21029408) / 0.18 + 95.0) / 1023.0
     )
 
-# 2. Apple Log / Apple Wide Gamut (Apple Log Profile White Paper 2023)
+# 2. Apple Log / Rec.2020 (Apple Log Profile White Paper 2023, ITU-R BT.2020 gamut to BT.709 gamut)
 MAT_BT2020_TO_BT709 = np.array([
     [ 1.6605, -0.5876, -0.0728],
     [-0.1246,  1.1329, -0.0083],
@@ -243,6 +243,9 @@ def apply_input_camera_profile(
     white_ceil: float = 0.95
 ) -> np.ndarray:
     p = profile.lower().strip()
+    if p == "auto_ask":
+        raise ValueError("auto_ask is a pending decision state and cannot be applied as a camera profile transform.")
+        
     if p in ["rec709", "bt709", "srgb", "display"]:
         return np.clip(bgr_float, 0.0, 1.0)
         
@@ -264,8 +267,10 @@ def apply_input_camera_profile(
         display_rgb = scene_linear_to_rec709_display(converted)
         return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
         
-    # Default to generic experimental flat CST
-    return apply_log_to_rec709_cst(bgr_float, black_floor=black_floor, white_ceil=white_ceil)
+    if p in ["generic_log_experimental", "generic_log", "generic log", "flat", "log"]:
+        return apply_log_to_rec709_cst(bgr_float, black_floor=black_floor, white_ceil=white_ceil)
+
+    raise ValueError(f"Unknown camera input profile '{profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, generic_log_experimental.")
 
 def calculate_deterministic_match_params(
     reference: ShotMetrics,
@@ -390,7 +395,9 @@ def apply_color_grade_to_frame(
     profile = "rec709"
     if isinstance(plan_or_params, GradePlan):
         profile = plan_or_params.input_transform.profile
-        if profile in ["rec709", "auto_ask"] and (plan_or_params.input_transform.is_log or is_log):
+        if profile == "auto_ask":
+            raise ValueError("auto_ask is a pending decision state and cannot be applied in apply_color_grade_to_frame. A concrete profile must be resolved before grading.")
+        if profile == "rec709" and (plan_or_params.input_transform.is_log or is_log):
             profile = "generic_log_experimental"
     elif is_log:
         profile = "generic_log_experimental"
@@ -622,9 +629,18 @@ def assess_normalization_health(
         "highlight_clip_pct": round(avg_hl_clip, 2)
     }
     
+    if avg_sh_clip > 8.0 or avg_hl_clip > 8.0:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
+            metrics_summary=metrics_summary
+        )
+
     # If source had flat log-like characteristics:
     src_iqr = source_metrics.p75_luminance - source_metrics.p25_luminance
-    if source_metrics.avg_chroma < 12.0 and (src_iqr < 55.0 or source_metrics.p5_luminance > 38.0):
+    if source_metrics.avg_chroma < 12.0 and (src_iqr < 55.0 or source_metrics.p5_luminance > 38.0) and p5 > 25.0:
         # Clip was flat initially. If it didn't materially expand or p5 is still elevated under Rec.709:
         if iqr < 35.0 or (p5 > 35.0 and profile in ["rec709", "auto_ask"]):
             return NormalizationValidationResult(
@@ -634,15 +650,6 @@ def assess_normalization_health(
                 reason=f"Footage exhibits elevated black floor (p5={p5:.1f}) and flat contrast (IQR={iqr:.1f}). Verification of camera Log profile required.",
                 metrics_summary=metrics_summary
             )
-            
-    if avg_sh_clip > 8.0 or avg_hl_clip > 8.0:
-        return NormalizationValidationResult(
-            shot_id=shot_id,
-            state="NORMALIZATION_FAILED",
-            passed=False,
-            reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
-            metrics_summary=metrics_summary
-        )
         
     return NormalizationValidationResult(
         shot_id=shot_id,

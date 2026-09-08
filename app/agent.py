@@ -100,11 +100,18 @@ class AutonomousColoristAgent:
         
         # Resolve per-shot profile selections
         per_shot_profiles = {}
+        per_shot_confirmed = {}
+        per_shot_overrides = {}
         if input_profiles:
             for p_sel in input_profiles:
                 idx = p_sel.get("shot_index", 0) if isinstance(p_sel, dict) else getattr(p_sel, "shot_index", 0)
                 prof = p_sel.get("profile", "rec709") if isinstance(p_sel, dict) else getattr(p_sel, "profile", "rec709")
-                per_shot_profiles[idx] = str(prof)
+                conf = p_sel.get("user_confirmed", False) if isinstance(p_sel, dict) else getattr(p_sel, "user_confirmed", False)
+                ovr = p_sel.get("override_warning", False) if isinstance(p_sel, dict) else getattr(p_sel, "override_warning", False)
+                prof_str = prof.value if hasattr(prof, "value") else str(prof)
+                per_shot_profiles[idx] = prof_str
+                per_shot_confirmed[idx] = conf
+                per_shot_overrides[idx] = ovr
 
         shot_metrics: List[ShotMetrics] = []
         shot_assessments: List[InputProfileAssessment] = []
@@ -123,14 +130,19 @@ class AutonomousColoristAgent:
             cached_timestamps.append(timestamps)
             
             req_prof = per_shot_profiles.get(i, color_profile)
-            assessment = assess_input_profile(shot_id, probed_info, metrics, requested_profile=req_prof)
+            is_conf = per_shot_confirmed.get(i, False)
+            assessment = assess_input_profile(shot_id, probed_info, metrics, requested_profile=req_prof, shot_index=i, user_confirmed=is_conf)
             shot_assessments.append(assessment)
-            resolved_profiles.append(assessment.selected_profile)
             
+            final_prof = assessment.resolved_profile or assessment.selected_profile
+            if final_prof == "auto_ask":
+                raise ValueError(f"Unresolved profile 'auto_ask' for shot {shot_id}. Every shot must have a concrete resolved profile before grading begins.")
+            resolved_profiles.append(final_prof)
+            
+            rec_str = assessment.recommended_profile or "None"
+            log_event(f"  [Input Profile] {shot_id}: Requested='{req_prof}' | Recommended='{rec_str}' | Resolved='{final_prof}' | Source='{assessment.resolution_source}'")
             if assessment.profile_mismatch_warning:
-                log_event(f"  [Advisory Safety Warning] {shot_id}: {assessment.warning_message}")
-            else:
-                log_event(f"  [Input Profile] {shot_id}: {assessment.selected_profile} (Signal: {assessment.signal_class_hint})")
+                log_event(f"    [Safety Warning] {shot_id}: {assessment.warning_message}")
             
         ref_metrics = shot_metrics[ref_idx]
         
@@ -185,6 +197,22 @@ class AutonomousColoristAgent:
         
         normalization_results: List[NormalizationValidationResult] = []
         ref_norm_res = assess_normalization_health(ref_shot_id, ref_metrics, ref_norm_frames, profile=ref_profile)
+        
+        ref_has_override = per_shot_overrides.get(ref_idx, False) or per_shot_confirmed.get(ref_idx, False)
+        if not ref_norm_res.passed:
+            if ref_has_override and ref_norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
+                ref_norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
+                ref_norm_res.passed = True
+                log_event(f"  [Normalization Gate Override] {ref_shot_id}: User explicitly overridden warning.")
+            elif ref_norm_res.state == "NORMALIZATION_FAILED":
+                log_event(f"  [Normalization Gate FAILED] {ref_shot_id}: {ref_norm_res.reason}")
+                normalization_results.append(ref_norm_res)
+                raise RuntimeError(f"Master reference '{ref_shot_id}' failed normalization gate ({ref_norm_res.state}): {ref_norm_res.reason}. Grading halted before establishing master standard.")
+            else:
+                log_event(f"  [Normalization Gate BLOCKED] {ref_shot_id}: {ref_norm_res.reason}")
+                normalization_results.append(ref_norm_res)
+                raise RuntimeError(f"Master reference '{ref_shot_id}' requires profile confirmation ({ref_norm_res.state}): {ref_norm_res.reason}. Confirmation required before establishing master standard.")
+
         normalization_results.append(ref_norm_res)
         log_event(f"  [Normalization Gate] {ref_shot_id}: {ref_norm_res.state} — {ref_norm_res.reason}")
         
@@ -269,7 +297,24 @@ class AutonomousColoristAgent:
                     input_transform=initial_cand_plan.input_transform
                 )) for f in cached_frames[i]]
                 cand_norm_res = assess_normalization_health(shot_id, metrics, cand_norm_frames, profile=shot_profile)
+                
+                cand_has_override = per_shot_overrides.get(i, False) or per_shot_confirmed.get(i, False)
+                if not cand_norm_res.passed:
+                    if cand_has_override and cand_norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
+                        cand_norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
+                        cand_norm_res.passed = True
+                        log_event(f"  [Normalization Gate Override] {shot_id}: User explicitly overridden warning.")
+                    elif cand_norm_res.state == "NORMALIZATION_FAILED":
+                        log_event(f"  [Normalization Gate FAILED] {shot_id}: {cand_norm_res.reason}")
+                        normalization_results.append(cand_norm_res)
+                        raise RuntimeError(f"Candidate shot '{shot_id}' failed normalization gate ({cand_norm_res.state}): {cand_norm_res.reason}. Grading halted before evaluation and rendering.")
+                    else:
+                        log_event(f"  [Normalization Gate BLOCKED] {shot_id}: {cand_norm_res.reason}")
+                        normalization_results.append(cand_norm_res)
+                        raise RuntimeError(f"Candidate shot '{shot_id}' requires profile confirmation ({cand_norm_res.state}): {cand_norm_res.reason}. Grading halted before evaluation and rendering.")
+
                 normalization_results.append(cand_norm_res)
+                log_event(f"  [Normalization Gate] {shot_id}: {cand_norm_res.state} — {cand_norm_res.reason}")
                 
                 if is_same_scene:
                     log_event(f"Matching {shot_id} to continuous scene reference {ref_shot_id} (Group: {semantic.scene_group_id})...")
@@ -369,7 +414,7 @@ class AutonomousColoristAgent:
                                 p50_target = graded_ref_metrics.p50_luminance if graded_ref_metrics.p50_luminance > 0 else graded_ref_metrics.avg_luminance
                                 p50_cand = eval_metrics.p50_luminance if eval_metrics.p50_luminance > 0 else eval_metrics.avg_luminance
                                 ev_adj = float(np.clip(np.log2(max(1.0, p50_target) / max(1.0, p50_cand)) * 0.45, -1.0, 1.0))
-                                if abs(ev_adj) > 0.05:
+                                if abs(ev_adj) > 0.02:
                                     new_ev = float(np.clip(proposed_plan.technical_balance.exposure_ev + ev_adj, -2.5, 2.5))
                                     d_ev = round(new_ev - proposed_plan.technical_balance.exposure_ev, 2)
                                     if ("exposure_ev", d_ev) not in rejected_deltas and abs(d_ev) > 0.02:
@@ -377,7 +422,27 @@ class AutonomousColoristAgent:
                                         proposed_plan.technical_balance.exposure_ev = round(new_ev, 2)
                                         action_desc = f"Adjusted exposure by {d_ev:+.2f} EV"
                                         
-                            elif best_score.chromatic_similarity < 70.0:
+                                if not deltas:
+                                    ref_iqr = graded_ref_metrics.p75_luminance - graded_ref_metrics.p25_luminance
+                                    cand_iqr = eval_metrics.p75_luminance - eval_metrics.p25_luminance
+                                    if ref_iqr > 10.0 and cand_iqr > 0.0:
+                                        iqr_ratio = ref_iqr / max(5.0, cand_iqr)
+                                        if iqr_ratio > 1.2:
+                                            new_c = min(1.40, round(proposed_plan.creative_look.contrast * 1.10, 2))
+                                            d_c = round(new_c - proposed_plan.creative_look.contrast, 2)
+                                            if abs(d_c) > 0.02 and ("contrast", d_c) not in rejected_deltas:
+                                                deltas["contrast"] = d_c
+                                                proposed_plan.creative_look.contrast = new_c
+                                                action_desc = f"Steepened contrast curve to {new_c}x to match tonal spread"
+                                        elif iqr_ratio < 0.8:
+                                            new_c = max(0.80, round(proposed_plan.creative_look.contrast * 0.90, 2))
+                                            d_c = round(new_c - proposed_plan.creative_look.contrast, 2)
+                                            if abs(d_c) > 0.02 and ("contrast", d_c) not in rejected_deltas:
+                                                deltas["contrast"] = d_c
+                                                proposed_plan.creative_look.contrast = new_c
+                                                action_desc = f"Softened contrast curve to {new_c}x to match tonal spread"
+                                        
+                            if not deltas and best_score.chromatic_similarity < 70.0:
                                 delta_b = graded_ref_metrics.avg_lab_mean[2] - eval_metrics.avg_lab_mean[2]
                                 delta_a = graded_ref_metrics.avg_lab_mean[1] - eval_metrics.avg_lab_mean[1]
                                 t_adj = float(np.clip(delta_b * 0.35, -15.0, 15.0))
@@ -394,7 +459,7 @@ class AutonomousColoristAgent:
                                         proposed_plan.technical_balance.tint = round(new_tint, 1)
                                         action_desc = f"Refined white balance (temp: {d_t:+.1f}, tint: {d_tint:+.1f})"
                                         
-                            elif best_score.clipping_health < 80.0:
+                            if not deltas and best_score.clipping_health < 80.0:
                                 new_contrast = max(0.80, round(proposed_plan.creative_look.contrast * 0.90, 2))
                                 d_c = round(new_contrast - proposed_plan.creative_look.contrast, 2)
                                 if abs(d_c) > 0.02 and ("contrast", d_c) not in rejected_deltas:

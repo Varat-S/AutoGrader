@@ -15,6 +15,7 @@ from app.agent import AutonomousColoristAgent
 from app.media.ffmpeg import probe_video
 from app.tools.measure_color import measure_shot_color
 from app.tools.calculate_grade import assess_input_profile
+from app.models.grade import InputProfile, ShotProfileSelection
 
 app = FastAPI(
     title="AutoGrader — Autonomous Multimodal Cinema Colorist",
@@ -45,15 +46,15 @@ MAX_CLIPS_PER_JOB = 4
 class RunJobRequest(BaseModel):
     creative_prompt: str = Field(..., max_length=500, description="Filmmaker aesthetic description (max 500 characters)")
     reference_index: Optional[int] = Field(None, ge=0, le=3, description="Optional 0-indexed reference clip selection")
-    color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_apple_wide_gamut', 'generic_log_experimental'")
-    input_profiles: Optional[List[Dict[str, Any]]] = Field(None, description="Per-shot input profile selections: [{'shot_index': 0, 'profile': 'rec709'}, ...]")
+    color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_rec2020', 'generic_log_experimental'")
+    input_profiles: Optional[List[ShotProfileSelection]] = Field(None, description="Per-shot typed profile selections")
 
 def run_agent_task(
     job_id: str,
     prompt: str,
     ref_idx: Optional[int],
     color_profile: str = "auto",
-    input_profiles: Optional[List[Dict[str, Any]]] = None
+    input_profiles: Optional[List[ShotProfileSelection]] = None
 ):
     job = jobs.get(job_id)
     if not job:
@@ -209,14 +210,22 @@ def assess_job_profiles(job_id: str):
         try:
             info = probe_video(path)
             metrics = measure_shot_color(path, shot_id=shot_id)
-            assessment = assess_input_profile(shot_id, info, metrics, requested_profile="auto_ask")
+            assessment = assess_input_profile(shot_id, info, metrics, requested_profile="auto_ask", shot_index=i, user_confirmed=False)
             assessments.append(assessment.model_dump())
         except Exception as e:
             assessments.append({
+                "shot_index": i,
                 "shot_id": shot_id,
+                "requested_profile": "auto_ask",
                 "selected_profile": "rec709",
+                "metadata_recommendation": None,
                 "metadata_hint": "error",
-                "signal_class_hint": "unknown",
+                "signal_class_hint": "display_ready",
+                "recommended_profile": "rec709",
+                "resolved_profile": "rec709",
+                "resolution_source": "fallback_default",
+                "requires_confirmation": False,
+                "user_confirmed": False,
                 "confidence": 0.0,
                 "reasons": [f"Failed to assess profile: {str(e)}"],
                 "profile_mismatch_warning": False,
@@ -241,13 +250,80 @@ def run_job(job_id: str, request: RunJobRequest, background_tasks: BackgroundTas
         if request.reference_index < 0 or request.reference_index >= len(job["source_videos"]):
             raise HTTPException(status_code=400, detail="Invalid reference_index")
             
-    valid_profiles = {
-        "auto", "auto_ask", "rec709", "Rec.709", "Log", "Generic Log",
-        "sony_slog3_sgamut3cine", "apple_log_apple_wide_gamut", "generic_log_experimental",
-        "dlog", "slog"
+    # Normalize sequence color profile
+    seq_prof = request.color_profile.lower().strip()
+    if seq_prof == "apple_log_apple_wide_gamut":
+        seq_prof = "apple_log_rec2020"
+    elif seq_prof in ["rec.709", "bt709"]:
+        seq_prof = "rec709"
+        
+    valid_sequence_profiles = {
+        "auto", "rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "generic_log_experimental"
     }
-    if request.color_profile not in valid_profiles:
-        raise HTTPException(status_code=400, detail=f"Invalid color_profile '{request.color_profile}'. Valid options: {valid_profiles}")
+    if seq_prof not in valid_sequence_profiles:
+        raise HTTPException(status_code=400, detail=f"Invalid color_profile '{request.color_profile}'. Valid options: {sorted(list(valid_sequence_profiles))}")
+    request.color_profile = seq_prof
+
+    num_videos = len(job["source_videos"])
+    
+    provided_profiles: Dict[int, ShotProfileSelection] = {}
+    if request.input_profiles is not None:
+        seen_indices = set()
+        for p_sel in request.input_profiles:
+            if p_sel.shot_index < 0 or p_sel.shot_index >= num_videos:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"shot_index {p_sel.shot_index} is out of range for sequence of length {num_videos}."
+                )
+            if p_sel.shot_index in seen_indices:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate shot_index {p_sel.shot_index} in input_profiles."
+                )
+            seen_indices.add(p_sel.shot_index)
+            provided_profiles[p_sel.shot_index] = p_sel
+
+    final_input_profiles: List[ShotProfileSelection] = []
+    unresolved_shots = []
+
+    for i, path in enumerate(job["source_videos"]):
+        shot_id = f"shot_{chr(65 + i)}"
+        if i in provided_profiles:
+            p_sel = provided_profiles[i]
+            if p_sel.profile == InputProfile.AUTO_ASK or p_sel.profile.value == "auto_ask":
+                unresolved_shots.append(shot_id)
+            else:
+                final_input_profiles.append(p_sel)
+        else:
+            # Fall back to sequence default
+            if request.color_profile == "auto":
+                info = probe_video(path)
+                metrics = measure_shot_color(path, shot_id=shot_id)
+                assessment = assess_input_profile(shot_id, info, metrics, requested_profile="auto", shot_index=i, user_confirmed=False)
+                if assessment.requires_confirmation or assessment.resolved_profile is None or assessment.resolved_profile == "auto_ask":
+                    unresolved_shots.append(shot_id)
+                else:
+                    final_input_profiles.append(ShotProfileSelection(
+                        shot_index=i,
+                        profile=InputProfile(assessment.resolved_profile),
+                        user_confirmed=True
+                    ))
+            elif request.color_profile == "auto_ask":
+                unresolved_shots.append(shot_id)
+            else:
+                final_input_profiles.append(ShotProfileSelection(
+                    shot_index=i,
+                    profile=InputProfile(request.color_profile),
+                    user_confirmed=True
+                ))
+
+    if unresolved_shots:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Camera profile confirmation required before running. Unresolved shots: {unresolved_shots}"
+        )
+
+    request.input_profiles = final_input_profiles
         
     job["state"] = "queued"
     background_tasks.add_task(

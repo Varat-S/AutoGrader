@@ -1,0 +1,71 @@
+{
+  "git_commit_sha": "70e400ff33c6f3b4bbed1e074bd49591f73a74ec",
+  "timestamp_utc": "2026-09-08T16:03:43.357109+00:00",
+  "status": "PASS",
+  "total_duration_sec": 2.295,
+  "sequence_average_score": 97.4,
+  "pass_threshold": 75.0,
+  "reference_shot_id": "shot_A",
+  "shared_lut_valid": true,
+  "shots": [
+    {
+      "shot_id": "shot_A",
+      "state": "ACCEPTED",
+      "revisions_performed": 0,
+      "input_profile": "rec709",
+      "consistency_score": {
+        "overall": 100.0,
+        "tonal": 100.0,
+        "chromatic": 100.0,
+        "clipping_health": 100.0
+      },
+      "lut_valid": true,
+      "video_valid": true
+    },
+    {
+      "shot_id": "shot_B",
+      "state": "ACCEPTED",
+      "revisions_performed": 0,
+      "input_profile": "rec709",
+      "consistency_score": {
+        "overall": 92.2,
+        "tonal": 92.1,
+        "chromatic": 96.9,
+        "clipping_health": 100.0
+      },
+      "lut_valid": true,
+      "video_valid": true
+    },
+    {
+      "shot_id": "shot_C",
+      "state": "ACCEPTED",
+      "revisions_performed": 0,
+      "input_profile": "rec709",
+      "consistency_score": {
+        "overall": 100.0,
+        "tonal": 100.0,
+        "chromatic": 100.0,
+        "clipping_health": 100.0
+      },
+      "lut_valid": true,
+      "video_valid": true
+    }
+  ],
+  "normalization_health": [
+    {
+      "shot_id": "shot_A",
+      "state": "NORMALIZATION_VERIFIED",
+      "passed": true
+    },
+    {
+      "shot_id": "shot_B",
+      "state": "NORMALIZATION_VERIFIED",
+      "passed": true
+    },
+    {
+      "shot_id": "shot_C",
+      "state": "NORMALIZATION_VERIFIED",
+      "passed": true
+    }
+  ]
+}

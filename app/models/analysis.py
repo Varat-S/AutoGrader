@@ -1,15 +1,25 @@
 from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
-class InputProfileAssessment(BaseModel):
+class ShotProfileDecision(BaseModel):
+    shot_index: int = Field(0, ge=0)
     shot_id: str
-    selected_profile: str
-    metadata_hint: str = "unknown"
+    requested_profile: str = "rec709"
+    metadata_recommendation: Optional[str] = None
     signal_class_hint: Literal["display_ready", "log_like", "ambiguous"] = "display_ready"
-    confidence: float = 0.5
-    reasons: List[str] = Field(default_factory=list)
-    profile_mismatch_warning: bool = False
+    recommended_profile: Optional[str] = None
+    resolved_profile: Optional[str] = None
+    resolution_source: Literal["user_explicit", "metadata_recommendation", "user_confirmed", "user_override", "fallback_default", "unresolved"] = "unresolved"
+    requires_confirmation: bool = False
+    user_confirmed: bool = False
     warning_message: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+    confidence: float = 0.5
+
+class InputProfileAssessment(ShotProfileDecision):
+    selected_profile: str = "rec709"
+    metadata_hint: str = "unknown"
+    profile_mismatch_warning: bool = False
 
 class NormalizationValidationResult(BaseModel):
     shot_id: str

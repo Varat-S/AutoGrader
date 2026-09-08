@@ -101,18 +101,41 @@ function setupEventListeners() {
         });
     });
 
-    // Banner Actions (P0-C)
-    if (btnBannerFix) {
-        btnBannerFix.addEventListener("click", () => {
-            currentAssessments.forEach((ass, idx) => {
-                const sel = document.querySelector(`.clip-profile-select[data-shot-index="${idx}"]`);
-                if (sel && ass.selected_profile) {
-                    sel.value = ass.selected_profile;
-                    sel.dataset.userModified = "true";
+    // Sequence default profile propagation to unmodified shots
+    colorSelect.addEventListener("change", () => {
+        const val = colorSelect.value;
+        const shotSelects = document.querySelectorAll(".clip-profile-select");
+        shotSelects.forEach(sel => {
+            if (!sel.dataset.userModified) {
+                if (val === "auto") {
+                    sel.value = "auto_ask";
+                } else {
+                    sel.value = val;
                 }
-            });
-            if (bannerWarning) bannerWarning.style.display = "none";
+            }
         });
+    });
+
+    // Apply Recommended Profiles Actions
+    const applyRecommendedProfiles = () => {
+        if (!currentAssessments || currentAssessments.length === 0) return;
+        currentAssessments.forEach((ass, idx) => {
+            const sel = document.querySelector(`.clip-profile-select[data-shot-index="${idx}"]`);
+            if (sel) {
+                const rec = ass.recommended_profile || ass.metadata_recommendation || (ass.selected_profile !== "auto_ask" ? ass.selected_profile : "rec709");
+                sel.value = rec;
+                sel.dataset.userModified = "true";
+            }
+        });
+        if (bannerWarning) bannerWarning.style.display = "none";
+    };
+
+    if (btnBannerFix) {
+        btnBannerFix.addEventListener("click", applyRecommendedProfiles);
+    }
+    const btnApplyRec = document.getElementById("btn-apply-recommended");
+    if (btnApplyRec) {
+        btnApplyRec.addEventListener("click", applyRecommendedProfiles);
     }
 
     if (btnBannerDismiss) {
@@ -124,15 +147,28 @@ function setupEventListeners() {
     // Run Workflow
     btnRun.addEventListener("click", async () => {
         if (!currentJobId || btnRun.disabled) return;
+        
+        const shotSelects = document.querySelectorAll(".clip-profile-select");
+        const unresolvedShots = [];
+        shotSelects.forEach((sel, idx) => {
+            if (sel.value === "auto_ask") {
+                unresolvedShots.push(`Shot ${String.fromCharCode(65 + idx)}`);
+            }
+        });
+        
+        if (unresolvedShots.length > 0) {
+            alert(`Please select or confirm camera profiles for all shots before grading.\n\nUnresolved shots: ${unresolvedShots.join(", ")}`);
+            return;
+        }
+
         btnRun.disabled = true;
         
         const refVal = refSelect.value === "auto" ? null : parseInt(refSelect.value);
         const colorProfileVal = colorSelect.value;
         
         const inputProfiles = [];
-        const shotSelects = document.querySelectorAll(".clip-profile-select");
         shotSelects.forEach((sel, idx) => {
-            inputProfiles.push({ shot_index: idx, profile: sel.value });
+            inputProfiles.push({ shot_index: idx, profile: sel.value, user_confirmed: true });
         });
         
         try {
@@ -238,10 +274,10 @@ function updateClipsList(filenames) {
         sel.dataset.shotIndex = idx;
         
         const profileOptions = [
-            { value: "auto_ask", label: "Auto-detect" },
+            { value: "auto_ask", label: "Auto-detect / Ask if unsure" },
             { value: "rec709", label: "Rec.709 / Display" },
-            { value: "sony_slog3_sgamut3cine", label: "Sony S-Log3" },
-            { value: "apple_log_apple_wide_gamut", label: "Apple Log" },
+            { value: "sony_slog3_sgamut3cine", label: "Sony S-Log3 / S-Gamut3.Cine" },
+            { value: "apple_log_rec2020", label: "Apple Log / Rec.2020" },
             { value: "generic_log_experimental", label: "Generic Log / Flat" }
         ];
         
@@ -251,6 +287,9 @@ function updateClipsList(filenames) {
             opt.textContent = optData.label;
             sel.appendChild(opt);
         });
+        
+        const seqVal = colorSelect.value;
+        sel.value = seqVal === "auto" ? "auto_ask" : seqVal;
         
         sel.addEventListener("change", () => {
             sel.dataset.userModified = "true";
@@ -288,8 +327,10 @@ async function fetchProfileAssessments() {
             data.assessments.forEach((ass, idx) => {
                 const sel = document.querySelector(`.clip-profile-select[data-shot-index="${idx}"]`);
                 if (sel && !sel.dataset.userModified) {
-                    if (ass.selected_profile && ass.selected_profile !== "rec709") {
-                        sel.value = ass.selected_profile;
+                    if (ass.resolved_profile) {
+                        sel.value = ass.resolved_profile;
+                    } else if (ass.recommended_profile) {
+                        sel.value = ass.recommended_profile;
                     }
                 }
                 if (ass.profile_mismatch_warning) {

@@ -70,22 +70,23 @@ def build_grade_plan(
     
     # 1. INPUT TRANSFORM (Authoritative Precedence)
     p_lower = color_profile.lower().strip()
+    if p_lower == "auto_ask":
+        raise ValueError("auto_ask is a pending decision state and cannot be converted into a GradePlan. A concrete profile must be resolved before grading.")
+
     if p_lower in ["rec709", "rec.709", "bt709", "srgb", "display"]:
         target_is_log = False
         resolved_profile = "rec709"
     elif "slog3" in p_lower or "s_log3" in p_lower:
         target_is_log = True
         resolved_profile = "sony_slog3_sgamut3cine"
-    elif "apple" in p_lower:
+    elif "apple" in p_lower or p_lower == "apple_log_rec2020":
         target_is_log = True
-        resolved_profile = "apple_log_apple_wide_gamut"
+        resolved_profile = "apple_log_rec2020"
     elif p_lower in ["log", "generic log", "generic_log_experimental", "flat"]:
         target_is_log = True
         resolved_profile = "generic_log_experimental"
     else:
-        # Auto: check metadata + heuristic + semantic text
-        target_is_log = bool(is_log_profile(target) or (target_semantic and "log" in target_semantic.scene_description.lower()))
-        resolved_profile = "generic_log_experimental" if target_is_log else "rec709"
+        raise ValueError(f"Unsupported camera profile '{color_profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, generic_log_experimental.")
         
     plan.input_transform = InputTransformParams(
         is_log=target_is_log,
@@ -217,23 +218,29 @@ def assess_input_profile(
     shot_id: str,
     probed_info: Dict[str, Any],
     metrics: ShotMetrics,
-    requested_profile: Optional[str] = None
+    requested_profile: Optional[str] = None,
+    shot_index: int = 0,
+    user_confirmed: bool = False
 ) -> InputProfileAssessment:
-    """Calculates an advisory profile assessment and safety mismatch check."""
+    """Calculates an advisory profile assessment, separated into requested,
+    recommended, and resolved profiles with explicit confirmation requirements.
+    """
     transfer = str(probed_info.get("color_transfer", "")).lower()
+    primaries = str(probed_info.get("color_primaries", "")).lower()
     path_lower = str(probed_info.get("path", "")).lower()
     
-    metadata_hint = "unknown"
-    if "slog3" in transfer or "s_log3" in transfer or "slog3" in path_lower:
-        metadata_hint = "sony_slog3_sgamut3cine"
-    elif "apple" in transfer or "apple" in path_lower:
-        metadata_hint = "apple_log_apple_wide_gamut"
-    elif "bt709" in transfer or "iec61966" in transfer:
-        metadata_hint = "rec709"
+    metadata_recommendation = None
+    if "slog3" in transfer or "s_log3" in transfer or "s-log3" in transfer or "slog3" in path_lower or "s-gamut3" in primaries or "sgamut3" in primaries:
+        metadata_recommendation = "sony_slog3_sgamut3cine"
+    elif "apple" in transfer or "apple" in path_lower or ("arib-std-b67" in transfer and "bt2020" in primaries):
+        metadata_recommendation = "apple_log_rec2020"
+    elif "bt709" in transfer or "iec61966" in transfer or "smpte170m" in transfer or "bt709" in primaries:
+        metadata_recommendation = "rec709"
         
     p5 = metrics.p5_luminance if metrics.p5_luminance > 0 else (metrics.sampled_frames[0].p5_luminance if metrics.sampled_frames else 0.0)
     p25 = metrics.p25_luminance if metrics.p25_luminance > 0 else (metrics.sampled_frames[0].p25_luminance if metrics.sampled_frames else 0.0)
     p75 = metrics.p75_luminance if metrics.p75_luminance > 0 else (metrics.sampled_frames[0].p75_luminance if metrics.sampled_frames else 0.0)
+    p95 = metrics.p95_luminance if metrics.p95_luminance > 0 else (metrics.sampled_frames[0].p95_luminance if metrics.sampled_frames else 255.0)
     iqr = p75 - p25
     chroma = metrics.avg_chroma
     
@@ -241,48 +248,118 @@ def assess_input_profile(
     if p5 > 38.0:
         reasons.append(f"elevated black floor (p5={p5:.1f})")
     if iqr < 55.0:
-        reasons.append(f"compressed upper tonal range (IQR={iqr:.1f})")
+        reasons.append(f"compressed tonal range (IQR={iqr:.1f})")
     if chroma < 12.0:
         reasons.append(f"low baseline chroma ({chroma:.1f})")
+    if p95 < 235.0:
+        reasons.append(f"compressed highlight ceiling (p95={p95:.1f})")
         
-    if len(reasons) >= 2:
+    # Conservative detection (Section 7):
+    # Avoid declaring Log from elevated p5 alone (high-key scenes) or low IQR alone (underexposed/dark scenes)
+    is_log_suspect = (p5 > 38.0 and chroma < 12.0 and iqr < 55.0 and p95 < 240.0 and metadata_recommendation != "rec709")
+    
+    if is_log_suspect:
         signal_class_hint = "log_like"
         confidence = 0.85
-    elif len(reasons) == 1:
+    elif p5 > 38.0 and chroma < 15.0 and metadata_recommendation != "rec709":
         signal_class_hint = "ambiguous"
         confidence = 0.60
     else:
         signal_class_hint = "display_ready"
         confidence = 0.80
         
-    selected = (requested_profile or "rec709").strip()
-    if selected == "auto":
-        selected = metadata_hint if metadata_hint != "unknown" else ("generic_log_experimental" if signal_class_hint == "log_like" else "rec709")
-        
-    mismatch = False
+    raw_req = (requested_profile or "auto_ask").strip()
+    req = raw_req.lower()
+    if req in ["apple_log_apple_wide_gamut", "apple_log"]:
+        req = "apple_log_rec2020"
+    elif req in ["rec.709", "bt709", "display"]:
+        req = "rec709"
+    elif req in ["slog3", "sony_slog3"]:
+        req = "sony_slog3_sgamut3cine"
+
     warning_msg = None
-    
-    if selected in ["rec709", "Rec.709"] and signal_class_hint == "log_like":
-        mismatch = True
-        warning_msg = (
-            f"Possible Log footage detected in {shot_id}. "
-            f"This clip has an elevated black floor (p5={p5:.1f}), compressed highlights, and flat tonal distribution. "
-            f"You selected Rec.709. Choose the camera profile if known."
-        )
-    elif selected not in ["rec709", "Rec.709", "auto_ask"] and signal_class_hint == "display_ready" and p5 < 15.0 and chroma > 16.0:
-        mismatch = True
-        warning_msg = (
-            f"Clip {shot_id} appears display-ready (Rec.709). "
-            f"Applying Log profile '{selected}' may crush shadow details or oversaturate the image."
-        )
+    requires_confirmation = False
+    recommended_profile = None
+    resolved_profile = None
+    resolution_source = "unresolved"
+
+    # Explicit known profile
+    if req in ["rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "generic_log_experimental"]:
+        resolved_profile = req
+        resolution_source = "user_explicit"
+        recommended_profile = metadata_recommendation or req
         
+        # Check contradictions
+        if req == "rec709" and metadata_recommendation in ["sony_slog3_sgamut3cine", "apple_log_rec2020"]:
+            requires_confirmation = True
+            warning_msg = f"Metadata indicates {metadata_recommendation}, but Rec.709 was selected. Confirm profile selection."
+        elif req == "rec709" and signal_class_hint == "log_like":
+            requires_confirmation = True
+            warning_msg = f"Possible Log/flat footage detected in {shot_id}; select the camera profile if known."
+        elif req != "rec709" and signal_class_hint == "display_ready" and p5 < 15.0 and chroma > 16.0:
+            requires_confirmation = True
+            warning_msg = f"Clip {shot_id} appears display-ready (Rec.709). Applying Log profile '{req}' may crush shadow details or oversaturate the image."
+        else:
+            requires_confirmation = False
+
+    # Auto-detect requested (auto / auto_ask)
+    else:
+        if metadata_recommendation:
+            recommended_profile = metadata_recommendation
+            if req == "auto":
+                requires_confirmation = False
+                resolved_profile = metadata_recommendation
+                resolution_source = "metadata_recommendation"
+            else:
+                requires_confirmation = True
+                resolved_profile = None
+                resolution_source = "unresolved"
+        else:
+            # Advisory detector only - never declare specific profile from histogram alone
+            if signal_class_hint == "log_like":
+                recommended_profile = "generic_log_experimental"
+                requires_confirmation = True
+                resolved_profile = None
+                resolution_source = "unresolved"
+                warning_msg = f"Possible Log/flat footage detected in {shot_id}; select the camera profile if known."
+            elif signal_class_hint == "ambiguous":
+                recommended_profile = None
+                requires_confirmation = True
+                resolved_profile = None
+                resolution_source = "unresolved"
+                warning_msg = f"Ambiguous tonal spread in {shot_id}; select the camera profile if known."
+            else:
+                recommended_profile = "rec709"
+                if req == "auto":
+                    requires_confirmation = False
+                    resolved_profile = "rec709"
+                    resolution_source = "fallback_default"
+                else:
+                    requires_confirmation = True
+                    resolved_profile = None
+                    resolution_source = "unresolved"
+
+    if user_confirmed:
+        if resolved_profile is None and recommended_profile:
+            resolved_profile = recommended_profile
+            resolution_source = "user_confirmed"
+        requires_confirmation = False
+
     return InputProfileAssessment(
+        shot_index=shot_index,
         shot_id=shot_id,
-        selected_profile=selected,
-        metadata_hint=metadata_hint,
+        requested_profile=raw_req,
+        selected_profile=resolved_profile or (recommended_profile if recommended_profile else (raw_req if raw_req not in ["auto", "auto_ask"] else "rec709")),
+        metadata_recommendation=metadata_recommendation,
+        metadata_hint=metadata_recommendation or "unknown",
         signal_class_hint=signal_class_hint,
-        confidence=round(confidence, 2),
+        recommended_profile=recommended_profile,
+        resolved_profile=resolved_profile,
+        resolution_source=resolution_source,
+        requires_confirmation=requires_confirmation,
+        user_confirmed=user_confirmed,
+        warning_message=warning_msg,
+        profile_mismatch_warning=bool(requires_confirmation and warning_msg),
         reasons=reasons,
-        profile_mismatch_warning=mismatch,
-        warning_message=warning_msg
+        confidence=round(confidence, 2)
     )

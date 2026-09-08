@@ -1,11 +1,11 @@
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class InputProfile(str, Enum):
     REC709 = "rec709"
     SONY_SLOG3 = "sony_slog3_sgamut3cine"
-    APPLE_LOG = "apple_log_apple_wide_gamut"
+    APPLE_LOG = "apple_log_rec2020"
     GENERIC_LOG = "generic_log_experimental"
     AUTO_ASK = "auto_ask"
 
@@ -13,13 +13,36 @@ class ShotProfileSelection(BaseModel):
     shot_index: int = Field(..., ge=0, description="0-indexed shot position in sequence")
     profile: InputProfile = Field(InputProfile.REC709, description="Selected camera input profile")
     user_confirmed: bool = Field(False, description="Whether user explicitly confirmed the profile")
+    override_warning: bool = Field(False, description="Whether user explicitly overrides any warnings")
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def normalize_profile(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v_clean = v.strip().lower()
+            if v_clean in ["apple_log_apple_wide_gamut", "apple_log"]:
+                return InputProfile.APPLE_LOG
+            if v_clean in ["slog3", "sony_slog3"]:
+                return InputProfile.SONY_SLOG3
+            if v_clean in ["rec.709", "bt709", "display"]:
+                return InputProfile.REC709
+            if v_clean in ["generic_log", "generic log", "flat"]:
+                return InputProfile.GENERIC_LOG
+        return v
 
 class InputTransformParams(BaseModel):
     is_log: bool = Field(False, description="Whether input is flat / logarithmic profile requiring normalization")
-    profile: str = Field("rec709", description="Camera profile: rec709, sony_slog3_sgamut3cine, apple_log_apple_wide_gamut, generic_log_experimental, auto_ask")
+    profile: str = Field("rec709", description="Camera profile: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, generic_log_experimental")
     log_type: str = Field("generic_flat", description="Legacy alias for backwards compatibility")
     black_floor: float = Field(0.11, description="Normalized sensor black point")
     white_ceil: float = Field(0.95, description="Normalized sensor clipping ceiling")
+
+    @field_validator("profile")
+    @classmethod
+    def validate_concrete_profile(cls, v: str) -> str:
+        if v.strip().lower() == "auto_ask":
+            raise ValueError("auto_ask is a pending decision state and cannot be used as an input transform profile in a GradePlan.")
+        return v
 
 class TechnicalBalanceParams(BaseModel):
     exposure_ev: float = Field(0.0, ge=-4.0, le=4.0, description="Per-shot primary exposure balance in EV stops (positive = brighten, negative = darken)")

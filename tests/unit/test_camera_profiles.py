@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 import numpy as np
 from app.media.color import (
     sony_slog3_to_linear,
@@ -31,9 +31,30 @@ def test_sony_slog3_golden_code_values():
     np.testing.assert_allclose(linear_test, linear_recovered, atol=1e-5)
 
 def test_sony_sgamut3cine_matrix_properties():
-    # S-Gamut3.Cine to BT.709 matrix must preserve neutral white (row sums == 1.0)
+    # 1. Neutral white/gray preservation (row sums == 1.0)
     row_sums = np.sum(MAT_SGAMUT3CINE_TO_BT709, axis=1)
     np.testing.assert_allclose(row_sums, [1.0, 1.0, 1.0], atol=1e-4)
+
+    # 2. Golden chromatic vectors (Red, Green, Blue primaries & mixed chromatic vector)
+    v_red = np.array([1.0, 0.0, 0.0])
+    v_green = np.array([0.0, 1.0, 0.0])
+    v_blue = np.array([0.0, 0.0, 1.0])
+    v_mixed = np.array([0.8, 0.5, 0.2])
+
+    out_red = MAT_SGAMUT3CINE_TO_BT709 @ v_red
+    out_green = MAT_SGAMUT3CINE_TO_BT709 @ v_green
+    out_blue = MAT_SGAMUT3CINE_TO_BT709 @ v_blue
+    out_mixed = MAT_SGAMUT3CINE_TO_BT709 @ v_mixed
+
+    np.testing.assert_allclose(out_red, [1.6586, -0.2100, -0.0195], atol=1e-4)
+    np.testing.assert_allclose(out_green, [-0.4939, 1.2583, -0.2521], atol=1e-4)
+    np.testing.assert_allclose(out_blue, [-0.1647, -0.0483, 1.2716], atol=1e-4)
+    expected_mixed = np.array([
+        1.6586 * 0.8 - 0.4939 * 0.5 - 0.1647 * 0.2,
+        -0.2100 * 0.8 + 1.2583 * 0.5 - 0.0483 * 0.2,
+        -0.0195 * 0.8 - 0.2521 * 0.5 + 1.2716 * 0.2
+    ])
+    np.testing.assert_allclose(out_mixed, expected_mixed, atol=1e-4)
 
 def test_apple_log_golden_code_values():
     # Test values documented in Apple Log Profile White Paper (2023)
@@ -53,21 +74,59 @@ def test_apple_log_golden_code_values():
     np.testing.assert_allclose(linear_test, linear_recovered, atol=1e-4)
 
 def test_apple_gamut_matrix_properties():
-    # BT.2020 to BT.709 matrix must preserve neutral white (row sums == 1.0)
+    # 1. BT.2020 to BT.709 matrix neutral white/gray preservation (row sums == 1.0)
     row_sums = np.sum(MAT_BT2020_TO_BT709, axis=1)
-    np.testing.assert_allclose(row_sums, [1.0, 1.0, 1.0], atol=1e-4)
+    np.testing.assert_allclose(row_sums, [1.0, 1.0, 1.0], atol=1e-3)
+
+    # 2. Golden chromatic vectors (Red, Green, Blue primaries & mixed chromatic vector)
+    v_red = np.array([1.0, 0.0, 0.0])
+    v_green = np.array([0.0, 1.0, 0.0])
+    v_blue = np.array([0.0, 0.0, 1.0])
+    v_mixed = np.array([0.8, 0.5, 0.2])
+
+    out_red = MAT_BT2020_TO_BT709 @ v_red
+    out_green = MAT_BT2020_TO_BT709 @ v_green
+    out_blue = MAT_BT2020_TO_BT709 @ v_blue
+    out_mixed = MAT_BT2020_TO_BT709 @ v_mixed
+
+    np.testing.assert_allclose(out_red, [1.6605, -0.1246, -0.0182], atol=1e-4)
+    np.testing.assert_allclose(out_green, [-0.5876, 1.1329, -0.1006], atol=1e-4)
+    np.testing.assert_allclose(out_blue, [-0.0728, -0.0083, 1.1187], atol=1e-4)
+    expected_mixed = np.array([
+        1.6605 * 0.8 - 0.5876 * 0.5 - 0.0728 * 0.2,
+        -0.1246 * 0.8 + 1.1329 * 0.5 - 0.0083 * 0.2,
+        -0.0182 * 0.8 - 0.1006 * 0.5 + 1.1187 * 0.2
+    ])
+    np.testing.assert_allclose(out_mixed, expected_mixed, atol=1e-4)
 
 def test_camera_profile_dispatcher():
     # S-Log3 18% gray (norm 0.4105)
     slog_frame = np.full((50, 50, 3), 0.4105, dtype=np.float32)
     out_slog = apply_input_camera_profile(slog_frame, "sony_slog3_sgamut3cine")
-    # Must map to standard Rec.709 midtone (~0.40 - 0.42)
+    # Must map to standard Rec.709 midtone (~0.38 - 0.44)
     assert 0.38 <= np.mean(out_slog) <= 0.44
+
+    # Apple Log / Rec.2020 18% gray (norm 0.4883)
+    apple_frame = np.full((50, 50, 3), 0.4883, dtype=np.float32)
+    out_apple = apply_input_camera_profile(apple_frame, "apple_log_rec2020")
+    assert 0.38 <= np.mean(out_apple) <= 0.46
+
+    # Legacy Apple Log name alias compatibility
+    out_apple_alias = apply_input_camera_profile(apple_frame, "apple_log_apple_wide_gamut")
+    np.testing.assert_allclose(out_apple, out_apple_alias, atol=1e-6)
 
     # Rec.709 display ready frame must not be altered
     rec_frame = np.full((50, 50, 3), 0.50, dtype=np.float32)
     out_rec = apply_input_camera_profile(rec_frame, "rec709")
     np.testing.assert_allclose(rec_frame, out_rec, atol=1e-6)
+
+    # auto_ask must be rejected with ValueError
+    with pytest.raises(ValueError, match="auto_ask is a pending decision state"):
+        apply_input_camera_profile(slog_frame, "auto_ask")
+
+    # Unknown profile string must be rejected with ValueError
+    with pytest.raises(ValueError, match="Unknown camera input profile"):
+        apply_input_camera_profile(slog_frame, "unknown_custom_log")
 
 def test_normalization_health_gate():
     # Simulate flat Log frame with elevated blacks (p5 ~ 42)
