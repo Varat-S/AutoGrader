@@ -453,6 +453,7 @@ class AutonomousColoristAgent:
                     (is_same_scene and initial_score.overall_score >= 75.0 and init_health_score.passed and init_health_score.hard_gates_passed) or
                     (not is_same_scene and initial_score.overall_score >= 75.0 and init_look_score.overall_score >= 75.0 and init_health_score.passed and init_health_score.hard_gates_passed)
                 )
+                is_accepted = is_initially_accepted
 
                 if is_initially_accepted:
                     final_state = "ACCEPTED"

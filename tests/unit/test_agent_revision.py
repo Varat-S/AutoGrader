@@ -483,3 +483,73 @@ def test_creative_spec_with_scene_intents_completes_delivery(sample_video_paths,
         assert os.path.exists(r["after_proxy_path"])
         assert r["grade_summary"] is not None
         assert len(r["grade_summary"]["scene_rationale"]) > 0
+
+def test_revisions_all_rejected_completes_delivery_without_unbound_local_error(sample_video_paths, tmp_path):
+    """Regression test: when candidate revisions are rejected, is_accepted must not raise UnboundLocalError."""
+    mock_inspection = SequenceInspectionResult(
+        shots=[
+            ShotSemanticAnalysis(
+                shot_id="shot_A",
+                scene_group_id="group_1",
+                relationship_to_reference="reference",
+                scene_description="Daylight reference",
+                lighting_environment="daylight",
+                time_of_day="day",
+                exposure_assessment="balanced",
+                target_exposure_compensation_ev=0.0,
+                black_point_lift=2.0,
+                people_present=False,
+                dominant_color_cast="neutral",
+                reference_suitability_score=0.9
+            ),
+            ShotSemanticAnalysis(
+                shot_id="shot_B",
+                scene_group_id="group_2",
+                relationship_to_reference="independent_scene",
+                scene_description="Dark candidate shot",
+                lighting_environment="low_key_night",
+                time_of_day="night",
+                exposure_assessment="low_key",
+                target_exposure_compensation_ev=0.0,
+                black_point_lift=2.0,
+                people_present=False,
+                dominant_color_cast="neutral",
+                reference_suitability_score=0.4
+            )
+        ],
+        recommended_reference_shot_id="shot_A",
+        scene_relationship="mixed_sequence"
+    )
+
+    mock_research = CinematographyResearchResult(query="test", objective="test", sources=[], is_grounded=False)
+    mock_spec = CreativeSpecification(
+        look_title="Test Look",
+        target_aesthetic="Natural",
+        contrast_intent=1.0,
+        saturation_intent=1.0,
+        highlight_bias="neutral",
+        shadow_bias="neutral",
+        black_level_treatment="neutral",
+        temperature_shift=0.0,
+        tint_shift=0.0,
+        black_mist_diffusion_strength=0.0,
+        cinematography_principles=[],
+        citations=[]
+    )
+
+    agent = AutonomousColoristAgent(work_dir=str(tmp_path))
+
+    with patch("app.agent.inspect_all_shots_batched", return_value=mock_inspection), \
+         patch("app.agent.research_cinematography_principles", return_value=mock_research), \
+         patch("app.agent.synthesize_creative_specification", return_value=mock_spec):
+
+        result = agent.process_sequence(
+            video_paths=sample_video_paths[:2],
+            creative_prompt="test prompt",
+            job_id="test_rejection_delivery"
+        )
+
+    assert len(result["results"]) == 2
+    for r in result["results"]:
+        assert os.path.exists(r["output_video_path"])
+        assert os.path.exists(r["lut_path"])
