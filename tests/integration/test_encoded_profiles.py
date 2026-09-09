@@ -16,15 +16,18 @@ from app.models.analysis import (
 from app.media.color import (
     linear_to_sony_slog3,
     linear_to_apple_log,
+    linear_to_dji_dlog,
     apply_input_camera_profile,
     assess_normalization_health,
     aggregate_shot_metrics,
     MAT_SGAMUT3CINE_TO_BT709,
     MAT_BT2020_TO_BT709,
+    MAT_DGAMUT_TO_BT709,
 )
 
 MAT_BT709_TO_SGAMUT3CINE = np.linalg.inv(MAT_SGAMUT3CINE_TO_BT709)
 MAT_BT709_TO_BT2020 = np.linalg.inv(MAT_BT2020_TO_BT709)
+MAT_BT709_TO_DGAMUT = np.linalg.inv(MAT_DGAMUT_TO_BT709)
 
 def generate_synthetic_scene_linear_gradient(height=64, width=64) -> np.ndarray:
     """Creates a scene-linear RGB image spanning deep shadow to highlights."""
@@ -52,6 +55,16 @@ def generate_apple_log_frame(height=64, width=64) -> np.ndarray:
     apple_log = linear_to_apple_log(bt2020)
     apple_log_bgr = cv2.cvtColor(np.clip(apple_log, 0.0, 1.0).astype(np.float32), cv2.COLOR_RGB2BGR)
     return (np.clip(apple_log_bgr, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+def generate_dji_dlog_frame(height=64, width=64) -> np.ndarray:
+    """Synthesizes an 8-bit BGR frame encoded in DJI D-Log / D-Gamut."""
+    rgb_linear = generate_synthetic_scene_linear_gradient(height, width)
+    h, w, c = rgb_linear.shape
+    dgamut = np.dot(rgb_linear.reshape(-1, 3), MAT_BT709_TO_DGAMUT.T).reshape(h, w, c)
+    dgamut = np.maximum(0.0, dgamut)
+    dlog = linear_to_dji_dlog(dgamut)
+    dlog_bgr = cv2.cvtColor(np.clip(dlog, 0.0, 1.0).astype(np.float32), cv2.COLOR_RGB2BGR)
+    return (np.clip(dlog_bgr, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 def create_synthetic_video(filepath: str, frame_generator, num_frames=12, fps=24.0):
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -104,6 +117,28 @@ def test_apple_log_tonal_expansion_and_recovery():
 
     assert p5_norm < p5_raw, f"Normalized p5 ({p5_norm}) should be lower than raw Apple Log ({p5_raw})"
     assert iqr_norm > iqr_raw * 1.15, f"IQR should expand after Apple Log normalization (raw: {iqr_raw}, norm: {iqr_norm})"
+
+def test_dji_dlog_tonal_expansion_and_recovery():
+    frame_dlog = generate_dji_dlog_frame()
+    gray_raw = cv2.cvtColor(frame_dlog, cv2.COLOR_BGR2GRAY)
+    p5_raw = float(np.percentile(gray_raw, 5))
+    p75_raw = float(np.percentile(gray_raw, 75))
+    p25_raw = float(np.percentile(gray_raw, 25))
+    iqr_raw = p75_raw - p25_raw
+    assert p5_raw >= 18.0, f"DJI D-Log raw black floor should be elevated, got {p5_raw}"
+
+    frame_float = frame_dlog.astype(np.float32) / 255.0
+    normalized = apply_input_camera_profile(frame_float, profile="dji_dlog_dgamut")
+    norm_uint8 = (np.clip(normalized, 0.0, 1.0) * 255.0).astype(np.uint8)
+    gray_norm = cv2.cvtColor(norm_uint8, cv2.COLOR_BGR2GRAY)
+
+    p5_norm = float(np.percentile(gray_norm, 5))
+    p75_norm = float(np.percentile(gray_norm, 75))
+    p25_norm = float(np.percentile(gray_norm, 25))
+    iqr_norm = p75_norm - p25_norm
+
+    assert p5_norm < p5_raw, f"Normalized p5 ({p5_norm}) should be lower than raw DJI D-Log ({p5_raw})"
+    assert iqr_norm > iqr_raw * 1.15, f"IQR should expand after DJI D-Log normalization (raw: {iqr_raw}, norm: {iqr_norm})"
 
 def test_agent_sequence_pipeline_with_encoded_log_clips(tmp_path):
     slog3_video = str(tmp_path / "synthetic_slog3.mp4")

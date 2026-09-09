@@ -5,11 +5,14 @@ from app.media.color import (
     linear_to_sony_slog3,
     apple_log_to_linear,
     linear_to_apple_log,
+    dji_dlog_to_linear,
+    linear_to_dji_dlog,
     apply_input_camera_profile,
     assess_normalization_health,
     aggregate_shot_metrics,
     MAT_SGAMUT3CINE_TO_BT709,
-    MAT_BT2020_TO_BT709
+    MAT_BT2020_TO_BT709,
+    MAT_DGAMUT_TO_BT709
 )
 
 def test_sony_slog3_golden_code_values():
@@ -99,6 +102,48 @@ def test_apple_gamut_matrix_properties():
     ])
     np.testing.assert_allclose(out_mixed, expected_mixed, atol=1e-4)
 
+def test_dji_dlog_golden_code_values():
+    # Test values documented in DJI White Paper on D-Log and D-Gamut
+    # 0% black (reflection 0.0) -> y = 6.025 * 0 + 0.0929 = 0.0929
+    # 18% middle gray (reflection 0.18) -> y = log10(0.18 * 0.9892 + 0.0108) * 0.256663 + 0.584555 ~ 0.39876
+    # 100% white (reflection 1.0) -> y = log10(1.0) * 0.256663 + 0.584555 = 0.584555
+    linear_test = np.array([0.0, 0.005, 0.0078, 0.01, 0.18, 0.50, 1.0, 5.0, 20.0])
+    dlog_encoded = linear_to_dji_dlog(linear_test)
+
+    assert abs(dlog_encoded[0] - 0.0929) < 1e-4, "DJI D-Log black code value mismatch"
+    assert abs(dlog_encoded[4] - 0.3988) < 1e-3, "DJI D-Log 18% gray code value mismatch"
+    assert abs(dlog_encoded[6] - 0.584555) < 1e-4, "DJI D-Log 100% white code value mismatch"
+
+    # Check round-trip inversion across full dynamic range
+    linear_recovered = dji_dlog_to_linear(dlog_encoded)
+    np.testing.assert_allclose(linear_test, linear_recovered, atol=1e-4)
+
+def test_dji_dgamut_matrix_properties():
+    # 1. D-Gamut to BT.709 matrix neutral white/gray preservation (row sums == 1.0)
+    row_sums = np.sum(MAT_DGAMUT_TO_BT709, axis=1)
+    np.testing.assert_allclose(row_sums, [1.0, 1.0, 1.0], atol=1e-3)
+
+    # 2. Golden chromatic vectors (Red, Green, Blue primaries & mixed chromatic vector)
+    v_red = np.array([1.0, 0.0, 0.0])
+    v_green = np.array([0.0, 1.0, 0.0])
+    v_blue = np.array([0.0, 0.0, 1.0])
+    v_mixed = np.array([0.8, 0.5, 0.2])
+
+    out_red = MAT_DGAMUT_TO_BT709 @ v_red
+    out_green = MAT_DGAMUT_TO_BT709 @ v_green
+    out_blue = MAT_DGAMUT_TO_BT709 @ v_blue
+    out_mixed = MAT_DGAMUT_TO_BT709 @ v_mixed
+
+    np.testing.assert_allclose(out_red, [1.6746, -0.0981, -0.0410], atol=1e-4)
+    np.testing.assert_allclose(out_green, [-0.5797, 1.3340, -0.2430], atol=1e-4)
+    np.testing.assert_allclose(out_blue, [-0.0949, -0.2359, 1.2840], atol=1e-4)
+    expected_mixed = np.array([
+        1.6746 * 0.8 - 0.5797 * 0.5 - 0.0949 * 0.2,
+        -0.0981 * 0.8 + 1.3340 * 0.5 - 0.2359 * 0.2,
+        -0.0410 * 0.8 - 0.2430 * 0.5 + 1.2840 * 0.2
+    ])
+    np.testing.assert_allclose(out_mixed, expected_mixed, atol=1e-4)
+
 def test_camera_profile_dispatcher():
     # S-Log3 18% gray (norm 0.4105)
     slog_frame = np.full((50, 50, 3), 0.4105, dtype=np.float32)
@@ -114,6 +159,17 @@ def test_camera_profile_dispatcher():
     # Legacy Apple Log name alias compatibility
     out_apple_alias = apply_input_camera_profile(apple_frame, "apple_log_apple_wide_gamut")
     np.testing.assert_allclose(out_apple, out_apple_alias, atol=1e-6)
+
+    # DJI D-Log / D-Gamut 18% gray (norm ~0.3988)
+    dlog_frame = np.full((50, 50, 3), 0.3988, dtype=np.float32)
+    out_dlog = apply_input_camera_profile(dlog_frame, "dji_dlog_dgamut")
+    assert 0.38 <= np.mean(out_dlog) <= 0.46
+
+    # DJI D-Log aliases
+    out_dlog_alias = apply_input_camera_profile(dlog_frame, "dji_dlog")
+    np.testing.assert_allclose(out_dlog, out_dlog_alias, atol=1e-6)
+    out_dlog_alias2 = apply_input_camera_profile(dlog_frame, "dlog")
+    np.testing.assert_allclose(out_dlog, out_dlog_alias2, atol=1e-6)
 
     # Rec.709 display ready frame must not be altered
     rec_frame = np.full((50, 50, 3), 0.50, dtype=np.float32)

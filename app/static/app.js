@@ -291,6 +291,7 @@ function updateClipsList(filenames) {
             { value: "rec709", label: "Rec.709 / Display" },
             { value: "sony_slog3_sgamut3cine", label: "Sony S-Log3 / S-Gamut3.Cine" },
             { value: "apple_log_rec2020", label: "Apple Log / Rec.2020" },
+            { value: "dji_dlog_dgamut", label: "DJI D-Log / D-Gamut" },
             { value: "generic_log_experimental", label: "Generic Log / Flat" }
         ];
         

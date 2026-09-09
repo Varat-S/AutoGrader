@@ -65,9 +65,28 @@ def test_apple_log_metadata_auto_ask():
     assert decision.requires_confirmation is True
     assert decision.resolved_profile is None
 
+def test_dji_dlog_metadata_auto_ask():
+    # DJI D-Log metadata + auto_ask -> recommends DJI D-Log / D-Gamut
+    probed = {"color_transfer": "d-log", "color_primaries": "d-gamut"}
+    metrics = make_metrics(p5=39.0, p25=52.0, p75=110.0, p95=170.0, chroma=8.0)
+    decision = assess_input_profile("shot_A", probed, metrics, requested_profile="auto_ask", shot_index=0)
+    assert decision.recommended_profile == "dji_dlog_dgamut"
+    assert decision.metadata_recommendation == "dji_dlog_dgamut"
+    assert decision.requires_confirmation is True
+    assert decision.resolved_profile is None
+
+def test_dji_dlog_alias_normalization():
+    # ShotProfileSelection should normalize "dji_dlog", "dlog", "dji" to InputProfile.DJI_DLOG
+    p1 = ShotProfileSelection(shot_index=0, profile="dji_dlog")
+    assert p1.profile == InputProfile.DJI_DLOG
+    p2 = ShotProfileSelection(shot_index=1, profile="dlog")
+    assert p2.profile == InputProfile.DJI_DLOG
+    p3 = ShotProfileSelection(shot_index=2, profile="dji_dlog_dgamut")
+    assert p3.profile == InputProfile.DJI_DLOG
+
 def test_histogram_only_conservative_detector():
     # Elevated p5, low IQR, low chroma with NO metadata
-    # Must NEVER definitively declare Sony S-Log3 or Apple Log from pixel values alone!
+    # Must NEVER definitively declare Sony S-Log3, Apple Log, or DJI D-Log from pixel values alone!
     probed = {}
     metrics = make_metrics(p5=42.0, p25=55.0, p75=95.0, p95=160.0, chroma=9.0, avg_lum=90.0)
     decision = assess_input_profile("shot_A", probed, metrics, requested_profile="auto_ask", shot_index=0)
@@ -77,7 +96,7 @@ def test_histogram_only_conservative_detector():
     assert decision.requires_confirmation is True
     assert decision.resolved_profile is None
     # Must NOT guess specific camera hardware
-    assert decision.recommended_profile not in ["sony_slog3_sgamut3cine", "apple_log_rec2020"]
+    assert decision.recommended_profile not in ["sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut"]
 
 def test_user_confirmed_profile_retention():
     probed = {"color_transfer": "s-log3"}

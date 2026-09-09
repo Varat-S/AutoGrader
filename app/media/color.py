@@ -211,6 +211,39 @@ def linear_to_apple_log(r: np.ndarray) -> np.ndarray:
         APPLE_LOG_C * ((np.maximum(APPLE_LOG_R0, r) - APPLE_LOG_R0) ** 2)
     )
 
+# 3. DJI D-Log / D-Gamut (DJI White Paper on D-Log and D-Gamut)
+MAT_DGAMUT_TO_BT709 = np.array([
+    [ 1.6746, -0.5797, -0.0949],
+    [-0.0981,  1.3340, -0.2359],
+    [-0.0410, -0.2430,  1.2840]
+], dtype=np.float32)
+
+MAT_BT709_TO_DGAMUT = np.linalg.inv(MAT_DGAMUT_TO_BT709).astype(np.float32)
+
+def dji_dlog_to_linear(y: np.ndarray) -> np.ndarray:
+    """Decodes normalized DJI D-Log [0, 1] to scene-linear light.
+    DJI D-Log curve specification:
+    For y <= 0.14: x = (y - 0.0929) / 6.025
+    For y >  0.14: x = (10 ** ((y - 0.584555) / 0.256663) - 0.0108) / 0.9892
+    """
+    return np.where(
+        y <= 0.14,
+        (y - 0.0929) / 6.025,
+        (10.0 ** ((y - 0.584555) / 0.256663) - 0.0108) / 0.9892
+    )
+
+def linear_to_dji_dlog(x: np.ndarray) -> np.ndarray:
+    """Encodes scene-linear light to normalized DJI D-Log [0, 1].
+    DJI D-Log curve specification:
+    For x <= 0.0078: y = 6.025 * x + 0.0929
+    For x >  0.0078: y = log10(x * 0.9892 + 0.0108) * 0.256663 + 0.584555
+    """
+    return np.where(
+        x <= 0.0078,
+        6.025 * x + 0.0929,
+        np.log10(np.maximum(1e-9, x * 0.9892 + 0.0108)) * 0.256663 + 0.584555
+    )
+
 def scene_linear_to_rec709_display(linear_rgb: np.ndarray) -> np.ndarray:
     """Standard ITU-R BT.709 display tone curve with highlight roll-off."""
     threshold = 0.85
@@ -273,11 +306,20 @@ def apply_input_camera_profile(
         converted = np.dot(reshaped, MAT_BT2020_TO_BT709.T).reshape(h, w, c_dim)
         display_rgb = scene_linear_to_rec709_display(converted)
         return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
+
+    if "dlog" in p or "d_log" in p or "d-log" in p:
+        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+        linear_rgb = dji_dlog_to_linear(rgb)
+        h, w, c_dim = linear_rgb.shape
+        reshaped = linear_rgb.reshape(-1, 3)
+        converted = np.dot(reshaped, MAT_DGAMUT_TO_BT709.T).reshape(h, w, c_dim)
+        display_rgb = scene_linear_to_rec709_display(converted)
+        return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
         
     if p in ["generic_log_experimental", "generic_log", "generic log", "flat", "log"]:
         return apply_log_to_rec709_cst(bgr_float, black_floor=black_floor, white_ceil=white_ceil)
 
-    raise ValueError(f"Unknown camera input profile '{profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, generic_log_experimental.")
+    raise ValueError(f"Unknown camera input profile '{profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, generic_log_experimental.")
 
 def calculate_deterministic_match_params(
     reference: ShotMetrics,

@@ -83,11 +83,14 @@ def build_grade_plan(
     elif "apple" in p_lower or p_lower == "apple_log_rec2020":
         target_is_log = True
         resolved_profile = "apple_log_rec2020"
+    elif "dlog" in p_lower or "d-log" in p_lower or p_lower in ["dji_dlog_dgamut", "dji_dlog", "dji"]:
+        target_is_log = True
+        resolved_profile = "dji_dlog_dgamut"
     elif p_lower in ["log", "generic log", "generic_log_experimental", "flat"]:
         target_is_log = True
         resolved_profile = "generic_log_experimental"
     else:
-        raise ValueError(f"Unsupported camera profile '{color_profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, generic_log_experimental.")
+        raise ValueError(f"Unsupported camera profile '{color_profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, generic_log_experimental.")
         
     plan.input_transform = InputTransformParams(
         is_log=target_is_log,
@@ -297,6 +300,8 @@ def assess_input_profile(
         metadata_recommendation = "sony_slog3_sgamut3cine"
     elif "apple" in transfer or "apple" in path_lower or ("arib-std-b67" in transfer and "bt2020" in primaries):
         metadata_recommendation = "apple_log_rec2020"
+    elif "dlog" in transfer or "d-log" in transfer or "dlog" in path_lower or "d-log" in path_lower or "d-gamut" in primaries or "dgamut" in primaries or "dji" in path_lower:
+        metadata_recommendation = "dji_dlog_dgamut"
     elif "bt709" in transfer or "iec61966" in transfer or "smpte170m" in transfer or "bt709" in primaries:
         metadata_recommendation = "rec709"
         
@@ -339,6 +344,8 @@ def assess_input_profile(
         req = "rec709"
     elif req in ["slog3", "sony_slog3"]:
         req = "sony_slog3_sgamut3cine"
+    elif req in ["dlog", "dji_dlog", "dji", "dji-dlog"]:
+        req = "dji_dlog_dgamut"
 
     warning_msg = None
     requires_confirmation = False
@@ -347,13 +354,13 @@ def assess_input_profile(
     resolution_source = "unresolved"
 
     # Explicit known profile
-    if req in ["rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "generic_log_experimental"]:
+    if req in ["rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "generic_log_experimental"]:
         resolved_profile = req
         resolution_source = "user_explicit"
         recommended_profile = metadata_recommendation or req
         
         # Check contradictions
-        if req == "rec709" and metadata_recommendation in ["sony_slog3_sgamut3cine", "apple_log_rec2020"]:
+        if req == "rec709" and metadata_recommendation in ["sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut"]:
             requires_confirmation = True
             warning_msg = f"Metadata indicates {metadata_recommendation}, but Rec.709 was selected. Confirm profile selection."
         elif req == "rec709" and signal_class_hint == "log_like":

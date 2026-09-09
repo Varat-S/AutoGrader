@@ -108,6 +108,7 @@ flowchart TD
 1. **Authoritative Camera Input Transforms**:
    - **Sony S-Log3 / S-Gamut3.Cine**: Authoritative Sony Technical Summary inverse EOTF and chromatic adaptation matrix `MAT_SGAMUT3CINE_TO_BT709`.
    - **Apple Log / Rec.2020 (`apple_log_rec2020`)**: Truthfully reflects Apple's iPhone 15/16 Pro specification with ITU-R BT.2020 color gamut mapping via `MAT_BT2020_TO_BT709`.
+   - **DJI D-Log / D-Gamut (`dji_dlog_dgamut`)**: Authoritative DJI White Paper transfer curve inverse EOTF and D-Gamut primary matrix `MAT_DGAMUT_TO_BT709` for DJI Ronin 4D, Inspire 3, Mavic 3 Pro, and Osmo systems.
    - **Generic Log**: Bounded experimental logarithmic transfer curve for unprofiled log footage.
    - **Rec.709**: Passthrough for display-referred broadcast video.
 2. **Conservative Log Detector & Truthful `auto_ask` Semantics**:
