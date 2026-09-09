@@ -1,4 +1,4 @@
-﻿FROM python:3.11-slim
+FROM python:3.11-slim
 
 # Install system dependencies & FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY app/ ./app
 COPY tests/fixtures/sample_videos/ ./tests/fixtures/sample_videos/
+COPY tests/fixtures/demo_sequence/ ./tests/fixtures/demo_sequence/
 
 # Create output directory
 RUN mkdir -p output/jobs

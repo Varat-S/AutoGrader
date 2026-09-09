@@ -319,9 +319,9 @@ def test_load_demo_sequence_loads_1080p_dji_clips(tmp_path):
 
     assert data["status"] == "success"
     assert len(data["loaded"]) == 3
-    assert any("twilight_flight" in clip for clip in data["loaded"])
-    assert any("overcast_harbor" in clip for clip in data["loaded"])
-    assert any("dusk_cityscape" in clip for clip in data["loaded"])
+    assert any("dji_forest" in clip for clip in data["loaded"])
+    assert any("dji_gardens" in clip for clip in data["loaded"])
+    assert any("dji_skyline" in clip for clip in data["loaded"])
 
     job_info = jobs[job_id]
     first_clip = job_info["source_videos"][0]
