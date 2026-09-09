@@ -219,7 +219,7 @@ Synthesize this into a structured CreativeSpecification with both GlobalLookInte
    - tint_shift: -15.0 to +15.0.
    - highlight_bias & shadow_bias (e.g. warm golden, cool slate, neon cyan).
    - highlight_rgb_offset & shadow_rgb_offset in [-0.15, 0.15] [B, G, R].
-2. Scene Intents: For every scene group listed above, provide a SceneIntent keyed by scene_group_id:
+2. Scene Intents: For every scene group listed above, provide a SceneIntent item in the scene_intents list with matching scene_group_id:
    - lighting_class: daylight, golden_hour, low_key_night, practical_night, interior_tungsten, etc.
    - exposure_class: balanced, low_key, high_key, underexposed, etc.
    - shadow_saturation_ceiling: 0.75-0.85 for dark/night scenes, 0.95-1.10 for daylight.
@@ -271,12 +271,14 @@ Synthesize this into a structured CreativeSpecification with both GlobalLookInte
                     )
 
                 # Ensure every detected scene group has a SceneIntent
+                existing_gids = {s.scene_group_id for s in spec.scene_intents}
                 if group_map:
                     for gid, sem in group_map.items():
-                        if gid not in spec.scene_intents:
-                            spec.scene_intents[gid] = build_default_scene_intent(gid, sem)
+                        if gid not in existing_gids:
+                            spec.scene_intents.append(build_default_scene_intent(gid, sem))
+                            existing_gids.add(gid)
                 elif not spec.scene_intents:
-                    spec.scene_intents["group_1"] = build_default_scene_intent("group_1")
+                    spec.scene_intents.append(build_default_scene_intent("group_1"))
 
                 return spec
             except Exception as e:
@@ -310,12 +312,12 @@ Synthesize this into a structured CreativeSpecification with both GlobalLookInte
         black_level_character="neutral"
     )
 
-    fallback_scene_intents = {}
+    fallback_scene_intents = []
     if group_map:
         for gid, sem in group_map.items():
-            fallback_scene_intents[gid] = build_default_scene_intent(gid, sem)
+            fallback_scene_intents.append(build_default_scene_intent(gid, sem))
     else:
-        fallback_scene_intents["group_1"] = build_default_scene_intent("group_1")
+        fallback_scene_intents.append(build_default_scene_intent("group_1"))
 
     return CreativeSpecification(
         look_title="Neutral Photographic Baseline",

@@ -191,7 +191,12 @@ class CreativeSpecification(BaseModel):
     cinematography_principles: List[str] = Field(default_factory=list)
     citations: List[SearchCitation] = Field(default_factory=list)
     global_look: Optional[GlobalLookIntent] = Field(default=None, description="Structured sequence-wide global look intent")
-    scene_intents: Dict[str, SceneIntent] = Field(default_factory=dict, description="Per-scene-group intent keyed by scene_group_id")
+    scene_intents: List[SceneIntent] = Field(default_factory=list, description="Per-scene-group intent list")
 
     def get_scene_intent(self, scene_group_id: str) -> Optional[SceneIntent]:
-        return self.scene_intents.get(scene_group_id)
+        if isinstance(self.scene_intents, dict):
+            return self.scene_intents.get(scene_group_id)
+        for s in self.scene_intents:
+            if s.scene_group_id == scene_group_id:
+                return s
+        return None
