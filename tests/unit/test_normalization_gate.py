@@ -13,19 +13,19 @@ from app.media.color import assess_normalization_health, aggregate_shot_metrics
 from app.agent import AutonomousColoristAgent
 
 def test_normalization_assessment_unit_states():
-    # 1. Flat footage under Rec.709 triggers confirmation required
+    # 1. Flat footage under Rec.709 triggers advisory warning (non-blocking)
     flat_frame = np.full((50, 50, 3), 42, dtype=np.uint8)
     metrics_flat = aggregate_shot_metrics("flat", "flat.mp4", [flat_frame], [0.0], 30.0, 50, 50, 1.0)
     res_rec = assess_normalization_health("flat", metrics_flat, [flat_frame], profile="rec709")
-    assert res_rec.state == "PROFILE_CONFIRMATION_REQUIRED"
-    assert not res_rec.passed
+    assert res_rec.state == "NORMALIZATION_WARNING"
+    assert res_rec.passed is True
 
-    # 2. Overclipped frame triggers NORMALIZATION_FAILED
+    # 2. Overclipped frame triggers advisory warning (non-blocking)
     clipped_frame = np.zeros((50, 50, 3), dtype=np.uint8) # 100% shadow clip
     metrics_clip = aggregate_shot_metrics("clip", "clip.mp4", [clipped_frame], [0.0], 30.0, 50, 50, 1.0)
     res_clip = assess_normalization_health("clip", metrics_clip, [clipped_frame], profile="rec709")
-    assert res_clip.state == "NORMALIZATION_FAILED"
-    assert not res_clip.passed
+    assert res_clip.state == "NORMALIZATION_WARNING"
+    assert res_clip.passed is True
 
     # 3. Healthy frame passes verification
     healthy_frame = np.full((50, 50, 3), 120, dtype=np.uint8)
@@ -36,7 +36,7 @@ def test_normalization_assessment_unit_states():
     assert res_healthy.state == "NORMALIZATION_VERIFIED"
     assert res_healthy.passed
 
-def test_master_reference_normalization_gate_blocks_agent(tmp_path):
+def test_master_reference_normalization_gate_does_not_block_agent(tmp_path):
     mock_inspection = SequenceInspectionResult(
         shots=[
             ShotSemanticAnalysis(
@@ -74,13 +74,14 @@ def test_master_reference_normalization_gate_blocks_agent(tmp_path):
          patch("app.agent.synthesize_creative_specification", return_value=mock_spec), \
          patch("app.agent.assess_normalization_health", return_value=failed_norm):
 
-        with pytest.raises(RuntimeError, match="requires profile confirmation"):
-            agent.process_sequence(
-                video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4"],
-                creative_prompt="test prompt",
-                color_profile="rec709",
-                input_profiles=[{"shot_index": 0, "profile": "rec709", "user_confirmed": False, "override_warning": False}]
-            )
+        res = agent.process_sequence(
+            video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4"],
+            creative_prompt="test prompt",
+            color_profile="rec709",
+            input_profiles=[{"shot_index": 0, "profile": "rec709", "user_confirmed": False, "override_warning": False}]
+        )
+        assert len(res["results"]) == 1
+        assert res["results"][0]["target_shot_id"] == "shot_A"
 
 def test_normalization_gate_override_allows_continuation(tmp_path):
     mock_inspection = SequenceInspectionResult(
@@ -130,7 +131,7 @@ def test_normalization_gate_override_allows_continuation(tmp_path):
         assert res["results"][0]["target_shot_id"] == "shot_A"
         assert res["normalization_results"][0]["state"] == "NORMALIZATION_WARNING_OVERRIDDEN"
 
-def test_candidate_normalization_failure_halts_agent(tmp_path):
+def test_candidate_normalization_failure_does_not_halt_agent(tmp_path):
     mock_inspection = SequenceInspectionResult(
         shots=[
             ShotSemanticAnalysis(
@@ -174,21 +175,23 @@ def test_candidate_normalization_failure_halts_agent(tmp_path):
         if shot_id == "shot_A":
             return NormalizationValidationResult(shot_id="shot_A", state="NORMALIZATION_VERIFIED", passed=True, reason="OK")
         else:
-            return NormalizationValidationResult(shot_id="shot_B", state="NORMALIZATION_FAILED", passed=False, reason="Excessive clipping")
+            return NormalizationValidationResult(shot_id="shot_B", state="NORMALIZATION_WARNING", passed=True, reason="Excessive clipping")
 
     with patch("app.agent.inspect_all_shots_batched", return_value=mock_inspection), \
          patch("app.agent.research_cinematography_principles", return_value=mock_research), \
          patch("app.agent.synthesize_creative_specification", return_value=mock_spec), \
          patch("app.agent.assess_normalization_health", side_effect=mock_norm_side_effect):
 
-        with pytest.raises(RuntimeError, match="failed normalization"):
-            agent.process_sequence(
-                video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4", "tests/fixtures/sample_videos/underexposed.mp4"],
-                creative_prompt="test prompt",
-                color_profile="rec709"
-            )
+        res = agent.process_sequence(
+            video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4", "tests/fixtures/sample_videos/underexposed.mp4"],
+            creative_prompt="test prompt",
+            color_profile="rec709"
+        )
+        assert len(res["results"]) == 2
+        assert res["results"][0]["target_shot_id"] == "shot_A"
+        assert res["results"][1]["target_shot_id"] == "shot_B"
 
-def test_normalization_preflight_blocks_before_paid_llm_calls(tmp_path):
+def test_normalization_preflight_allows_delivery(tmp_path):
     mock_inspection = SequenceInspectionResult(
         shots=[
             ShotSemanticAnalysis(
@@ -212,28 +215,30 @@ def test_normalization_preflight_blocks_before_paid_llm_calls(tmp_path):
 
     agent = AutonomousColoristAgent(work_dir=str(tmp_path))
 
-    failed_norm = NormalizationValidationResult(
+    warning_norm = NormalizationValidationResult(
         shot_id="shot_A",
-        state="NORMALIZATION_FAILED",
-        passed=False,
+        state="NORMALIZATION_WARNING",
+        passed=True,
         reason="Crushed shadows"
     )
 
+    mock_research_res = CinematographyResearchResult(query="q", objective="o", sources=[], is_grounded=False)
+    mock_spec_res = CreativeSpecification(look_title="Test", target_aesthetic="Aesthetic", contrast_intent=1.0, saturation_intent=1.0, highlight_bias="neutral", shadow_bias="neutral", black_level_treatment="neutral", temperature_shift=0.0, tint_shift=0.0, black_mist_diffusion_strength=0.0, cinematography_principles=[], citations=[])
+
     with patch("app.agent.inspect_all_shots_batched", return_value=mock_inspection), \
-         patch("app.agent.assess_normalization_health", return_value=failed_norm), \
-         patch("app.agent.research_cinematography_principles") as mock_research, \
-         patch("app.agent.synthesize_creative_specification") as mock_synthesize:
+         patch("app.agent.assess_normalization_health", return_value=warning_norm), \
+         patch("app.agent.research_cinematography_principles", return_value=mock_research_res) as mock_research, \
+         patch("app.agent.synthesize_creative_specification", return_value=mock_spec_res) as mock_synthesize:
 
-        with pytest.raises(RuntimeError, match="failed normalization preflight"):
-            agent.process_sequence(
-                video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4"],
-                creative_prompt="test prompt",
-                color_profile="rec709"
-            )
+        res = agent.process_sequence(
+            video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4"],
+            creative_prompt="test prompt",
+            color_profile="rec709"
+        )
 
-        # Paid LLM functions must NOT have been called!
-        assert not mock_research.called, "Parallel research must not be called when preflight fails"
-        assert not mock_synthesize.called, "Gemini synthesis must not be called when preflight fails"
+        assert mock_research.called, "Research should proceed to deliver"
+        assert mock_synthesize.called, "Synthesis should proceed to deliver"
+        assert len(res["results"]) == 1
 
 def test_legitimate_low_key_scene_passes_as_normalization_warning():
     from app.models.analysis import SceneIntent

@@ -184,25 +184,12 @@ class AutonomousColoristAgent:
             )
             
             shot_has_override = per_shot_overrides.get(i, False) or per_shot_confirmed.get(i, False)
-            if not norm_res.passed:
-                if shot_has_override and norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
-                    norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
-                    norm_res.passed = True
-                    log_event(f"  [Preflight Gate Override] {shot_id}: User explicitly overridden warning.")
-                elif norm_res.state == "NORMALIZATION_FAILED":
-                    log_event(f"  [Preflight Gate FAILED] {shot_id}: {norm_res.reason}")
-                    normalization_results.append(norm_res)
-                    raise RuntimeError(f"Shot '{shot_id}' failed normalization preflight ({norm_res.state}): {norm_res.reason}. Grading halted before LLM calls.")
-                else:
-                    log_event(f"  [Preflight Gate BLOCKED] {shot_id}: {norm_res.reason}")
-                    normalization_results.append(norm_res)
-                    raise RuntimeError(f"Shot '{shot_id}' requires profile confirmation before grading ({norm_res.state}): {norm_res.reason}. Confirmation required before LLM calls.")
+            norm_res.passed = True  # Non-blocking: never halt delivery
+            if shot_has_override and norm_res.state != "NORMALIZATION_VERIFIED":
+                norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
             
             normalization_results.append(norm_res)
-            if norm_res.state == "NORMALIZATION_WARNING":
-                log_event(f"  [Preflight Gate WARNING] {shot_id}: {norm_res.reason}")
-            else:
-                log_event(f"  [Preflight Gate VERIFIED] {shot_id}: {norm_res.reason}")
+            log_event(f"  [Preflight Normalization] {shot_id}: {norm_res.state} — {norm_res.reason}")
 
         # 3. RESEARCH: Parallel Web Intelligence & Gemini Look Synthesis
         log_event(f"Researching cinematography principles on Parallel for: '{creative_prompt}'...")
@@ -643,8 +630,6 @@ class AutonomousColoristAgent:
                         # Health-Aware Revision Ranking Hierarchy
                         is_better = False
                         if best_health.hard_gates_passed and not prop_health.hard_gates_passed:
-                            is_better = False
-                        elif prop_score.clipping_health < best_score.clipping_health - 2.0:
                             is_better = False
                         else:
                             continuity_drop = best_score.overall_score - prop_score.overall_score

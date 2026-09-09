@@ -189,10 +189,10 @@ def test_normalization_health_gate():
     flat_frame = np.full((50, 50, 3), 42, dtype=np.uint8)
     metrics = aggregate_shot_metrics("flat", "flat.mp4", [flat_frame], [0.0], 30.0, 50, 50, 1.0)
     
-    # Under Rec.709 selection, normalization health must flag PROFILE_CONFIRMATION_REQUIRED
+    # Under non-blocking normalization, health checks return advisory warning and pass to guarantee delivery
     res = assess_normalization_health("flat", metrics, [flat_frame], profile="rec709")
-    assert res.state == "PROFILE_CONFIRMATION_REQUIRED"
-    assert not res.passed
+    assert res.state == "NORMALIZATION_WARNING"
+    assert res.passed is True
 
 def test_dji_dlog_m_golden_code_values_and_reversibility():
     from app.media.color import dji_dlog_m_to_linear, linear_to_dji_dlog_m

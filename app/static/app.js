@@ -384,8 +384,21 @@ function startPolling(jobId) {
         } else if (job.state === "failed") {
             clearInterval(pollInterval);
             btnRun.disabled = false;
-            document.getElementById("agent-status-badge").innerText = "Failed";
-            document.getElementById("agent-status-badge").className = "status-badge badge-running";
+            const badge = document.getElementById("agent-status-badge");
+            badge.innerText = "Failed";
+            badge.className = "status-badge";
+            badge.style.background = "rgba(239, 68, 68, 0.2)";
+            badge.style.borderColor = "#ef4444";
+            badge.style.color = "#ef4444";
+            
+            const logFeed = document.getElementById("log-feed");
+            const errLine = document.createElement("div");
+            errLine.className = "log-line";
+            errLine.style.color = "#ef4444";
+            errLine.style.fontWeight = "bold";
+            errLine.innerText = `[Error] ${job.error || "Job execution stopped."}`;
+            logFeed.appendChild(errLine);
+            logFeed.scrollTop = logFeed.scrollHeight;
         }
     }, 1500);
 }

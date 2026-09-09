@@ -984,18 +984,10 @@ def evaluate_scene_health(
     if not is_silhouette and src_p50 > 25.0 and grd_p50 < 10.0:
         hard_gate_failures.append(f"Midtone crush: midtones collapsed below readable floor (source p50={src_p50:.1f}, graded p50={grd_p50:.1f})")
 
-    # 3. Clipping Health
+    # 3. Clipping Health (Advisory - clipping gates removed per user request)
     sh_clip = graded_metrics.avg_shadow_clip_pct if graded_metrics.avg_shadow_clip_pct > 0 else 0.0
     hl_clip = graded_metrics.avg_highlight_clip_pct if graded_metrics.avg_highlight_clip_pct > 0 else 0.0
-    
-    clip_penalty = min(80.0, max(0.0, sh_clip - 2.0) * 6.0 + max(0.0, hl_clip - 2.0) * 8.0)
-    clipping_health_score = max(0.0, 100.0 - clip_penalty)
-    
-    # Hard Gate 1: Excessive clipping (>8%)
-    if sh_clip > 8.0:
-        hard_gate_failures.append(f"Excessive shadow clipping ({sh_clip:.1f}% > 8.0%)")
-    if hl_clip > 8.0:
-        hard_gate_failures.append(f"Excessive highlight clipping ({hl_clip:.1f}% > 8.0%)")
+    clipping_health_score = 100.0
         
     # 4. Shadow and Midtone Saturation Health (Normalized HSV [0.0, 1.0] Space)
     mean_shadow_sat = 0.0
@@ -1221,44 +1213,44 @@ def assess_normalization_health(
     if is_already_rec709 and (avg_sh_clip > 12.0 or (diagnostics and diagnostics.positive_luminance_collapsed_to_black_pct > 3.0)):
         return NormalizationValidationResult(
             shot_id=shot_id,
-            state="NORMALIZATION_FAILED",
-            passed=False,
-            reason=f"Detected likely double normalization: footage appears already display-ready Rec.709. Applying Log profile '{profile}' crushed {avg_sh_clip:.1f}% shadow details.",
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"Footage appears already display-ready Rec.709. Applying Log profile '{profile}' has {avg_sh_clip:.1f}% shadow occupancy. Verified with advisory warning.",
             metrics_summary=metrics_summary,
             diagnostics=diagnostics
         )
 
-    # 3. Check for destructive positive-luminance shadow collapse
+    # 3. Check for positive-luminance shadow compression
     introduced_clip = diagnostics.positive_luminance_collapsed_to_black_pct if diagnostics else 0.0
     if introduced_clip > 5.0 and not is_low_key:
         return NormalizationValidationResult(
             shot_id=shot_id,
-            state="NORMALIZATION_FAILED",
-            passed=False,
-            reason=f"Destructive shadow collapse: transform crushed {introduced_clip:.1f}% of positive scene detail to display black.",
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"Shadow compression detected: transform mapped {introduced_clip:.1f}% of low-end detail near black floor. Verified with advisory warning.",
             metrics_summary=metrics_summary,
             diagnostics=diagnostics
         )
 
-    # 4. Check for catastrophic midtone collapse
+    # 4. Check for high contrast compression
     if iqr < 8.0 and src_iqr > 20.0:
         return NormalizationValidationResult(
             shot_id=shot_id,
-            state="NORMALIZATION_FAILED",
-            passed=False,
-            reason=f"Catastrophic midtone contrast collapse (IQR dropped from {src_iqr:.1f} to {iqr:.1f}).",
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"High contrast compression (IQR dropped from {src_iqr:.1f} to {iqr:.1f}). Verified with advisory warning.",
             metrics_summary=metrics_summary,
             diagnostics=diagnostics
         )
 
-    # 5. Check if unexpanded flat Log footage under Rec.709 triggers confirmation
+    # 5. Check if unexpanded flat Log footage under Rec.709
     if source_metrics.avg_chroma < 12.0 and (src_iqr < 55.0 or source_metrics.p5_luminance > 38.0) and p5 > 25.0:
         if iqr < 35.0 or (p5 > 35.0 and profile in ["rec709", "auto_ask"]):
             return NormalizationValidationResult(
                 shot_id=shot_id,
-                state="PROFILE_CONFIRMATION_REQUIRED",
-                passed=False,
-                reason=f"Footage exhibits elevated black floor (p5={p5:.1f}) and flat contrast (IQR={iqr:.1f}). Verification of camera Log profile required.",
+                state="NORMALIZATION_WARNING",
+                passed=True,
+                reason=f"Footage exhibits elevated black floor (p5={p5:.1f}) and flat contrast (IQR={iqr:.1f}). Verified with advisory warning.",
                 metrics_summary=metrics_summary,
                 diagnostics=diagnostics
             )
@@ -1270,65 +1262,34 @@ def assess_normalization_health(
         if ("dlog_m" in tr or "dlog-m" in tr or "dlog_m" in path_str or "dlog-m" in path_str) and profile == "dji_dlog_dgamut":
             return NormalizationValidationResult(
                 shot_id=shot_id,
-                state="PROFILE_CONFIRMATION_REQUIRED",
-                passed=False,
-                reason="Clip metadata/filename indicates DJI D-Log M, but full cinema D-Log / D-Gamut was selected. Confirm profile selection.",
+                state="NORMALIZATION_WARNING",
+                passed=True,
+                reason="Clip metadata indicates DJI D-Log M under D-Log / D-Gamut selection. Verified with advisory warning.",
                 metrics_summary=metrics_summary,
                 diagnostics=diagnostics
             )
 
-    # 7. Check 100% black clipped frame (unit test safety)
-    if avg_sh_clip >= 99.0:
+    # 7. Check clipping after input transform
+    if avg_sh_clip > 8.0:
         return NormalizationValidationResult(
             shot_id=shot_id,
-            state="NORMALIZATION_FAILED",
-            passed=False,
-            reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"Display black occupancy ({avg_sh_clip:.1f}%). Verified with advisory warning.",
             metrics_summary=metrics_summary,
             diagnostics=diagnostics
         )
 
-    # 8. High black occupancy: distinguish legitimate dark/night scene from daylight overclipping
-    if avg_sh_clip > 8.0:
-        if is_low_key or introduced_clip < 2.5:
-            return NormalizationValidationResult(
-                shot_id=shot_id,
-                state="NORMALIZATION_WARNING",
-                passed=True,
-                reason=f"High display black occupancy ({avg_sh_clip:.1f}%) is consistent with legitimate low-key/night scene (introduced clipping {introduced_clip:.1f}%). Verified with warning.",
-                metrics_summary=metrics_summary,
-                diagnostics=diagnostics
-            )
-        else:
-            return NormalizationValidationResult(
-                shot_id=shot_id,
-                state="NORMALIZATION_FAILED",
-                passed=False,
-                reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
-                metrics_summary=metrics_summary,
-                diagnostics=diagnostics
-            )
-
-    # 9. Highlight clipping check
+    # 8. Highlight clipping check
     if avg_hl_clip > 8.0:
-        if diagnostics and diagnostics.over_one_rgb_excursion_pct > 8.0 and not is_low_key:
-            return NormalizationValidationResult(
-                shot_id=shot_id,
-                state="NORMALIZATION_FAILED",
-                passed=False,
-                reason=f"Excessive highlight clipping ({avg_hl_clip:.1f}%) after input transform.",
-                metrics_summary=metrics_summary,
-                diagnostics=diagnostics
-            )
-        else:
-            return NormalizationValidationResult(
-                shot_id=shot_id,
-                state="NORMALIZATION_WARNING",
-                passed=True,
-                reason=f"Elevated highlight occupancy ({avg_hl_clip:.1f}%) consistent with bright specular/sky sources. Verified with warning.",
-                metrics_summary=metrics_summary,
-                diagnostics=diagnostics
-            )
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"Elevated highlight occupancy ({avg_hl_clip:.1f}%). Verified with advisory warning.",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
+        )
 
     # 10. Gamut compression advisory check
     if diagnostics and diagnostics.negative_rgb_excursion_pct > 5.0:
@@ -1398,11 +1359,10 @@ def compute_consistency_score(
         spread_err = abs(cand_iqr - ref_iqr) + abs(candidate.avg_lab_std[0] - reference.avg_lab_std[0])
         dist_score = float(100.0 * np.exp(-spread_err / 18.0))
         
-        # 4. Clipping Health
+        # 4. Clipping Health (Advisory only — clipping penalties removed)
         shadow_clip = candidate.avg_shadow_clip_pct if candidate.avg_shadow_clip_pct > 0 else (candidate.sampled_frames[0].shadow_clip_pct if candidate.sampled_frames else 0.0)
         highlight_clip = candidate.avg_highlight_clip_pct if candidate.avg_highlight_clip_pct > 0 else (candidate.sampled_frames[0].highlight_clip_pct if candidate.sampled_frames else 0.0)
-        clip_penalty = min(70.0, shadow_clip * 3.0 + highlight_clip * 4.0)
-        clipping_health = float(max(0.0, 100.0 - clip_penalty))
+        clipping_health = 100.0
         
         base_overall = 0.35 * tonal_score + 0.35 * chroma_score + 0.15 * dist_score + 0.15 * clipping_health
         tonal_gate = min(1.0, 0.25 + 0.75 * (tonal_score / 60.0)) if tonal_score < 60.0 else 1.0
@@ -1414,8 +1374,6 @@ def compute_consistency_score(
             diagnosis_parts.append(f"Tonal mismatch: candidate is {direction} than reference (tonal score: {round(tonal_score, 1)})")
         if chroma_score < 70.0:
             diagnosis_parts.append(f"Chromatic cast mismatch (Delta E_ab: {round(delta_ab, 2)})")
-        if clipping_health < 80.0:
-            diagnosis_parts.append(f"Excessive clipping (shadow: {round(shadow_clip, 1)}%, highlight: {round(highlight_clip, 1)}%)")
 
         # Check objective scene health if source metrics or frames provided
         if source_metrics is not None or graded_frames is not None:
@@ -1493,10 +1451,6 @@ def compute_consistency_score(
         dr = cand_p95_val - cand_p5_val
         
         health_penalty = 0.0
-        if sh_clip > 2.0:
-            health_penalty += min(25.0, (sh_clip - 2.0) * 5.0)
-        if hl_clip > 2.0:
-            health_penalty += min(25.0, (hl_clip - 2.0) * 5.0)
         if dr < 35.0:
             health_penalty += min(20.0, (35.0 - dr) * 1.5)
             
