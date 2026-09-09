@@ -244,3 +244,65 @@ def apply_lut_and_render(
             run_subprocess(cmd_silent)
             
     return output_path
+
+def generate_matched_browser_proxies(
+    source_path: str,
+    lut_path: str,
+    before_proxy_path: str,
+    after_proxy_path: str,
+    max_height: int = 720
+) -> Tuple[str, str]:
+    """Generates strictly matched before/after browser proxy videos for synchronized side-by-side display.
+    Guarantees identical resolution, frame rate, libx264 profile, pixel format, and Rec.709 color tags.
+    """
+    os.makedirs(os.path.dirname(before_proxy_path), exist_ok=True)
+    os.makedirs(os.path.dirname(after_proxy_path), exist_ok=True)
+    
+    info = probe_video(source_path)
+    fps = info.get("fps", 30.0)
+    w = int(info.get("width", 1920))
+    h = int(info.get("height", 1080))
+    if h > max_height:
+        target_h = max_height
+        target_w = int(round(w * (max_height / h) / 2.0)) * 2
+    else:
+        target_h = h - (h % 2)
+        target_w = w - (w % 2)
+    target_w = max(2, target_w)
+    target_h = max(2, target_h)
+    scale_filter = f"scale={target_w}:{target_h}"
+    formatted_lut_path = str(Path(lut_path).resolve().as_posix()).replace(':', '\\:')
+    lut_filter = f"lut3d=file='{formatted_lut_path}',{scale_filter}"
+    
+    common_args = [
+        '-r', str(fps),
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        '-colorspace', 'bt709',
+        '-an'
+    ]
+    
+    # 1. Render Before Proxy (Source without LUT)
+    cmd_before = [
+        get_ffmpeg_binary(),
+        '-y',
+        '-i', source_path,
+        '-vf', scale_filter
+    ] + common_args + [before_proxy_path]
+    run_subprocess(cmd_before)
+    
+    # 2. Render After Proxy (Source with LUT applied)
+    cmd_after = [
+        get_ffmpeg_binary(),
+        '-y',
+        '-i', source_path,
+        '-vf', lut_filter
+    ] + common_args + [after_proxy_path]
+    run_subprocess(cmd_after)
+    
+    return before_proxy_path, after_proxy_path
+

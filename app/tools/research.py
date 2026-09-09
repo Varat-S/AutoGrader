@@ -102,9 +102,81 @@ def research_cinematography_principles(
             is_grounded=False
         )
 
+from app.models.analysis import (
+    CinematographyResearchResult,
+    SearchCitation,
+    CreativeSpecification,
+    GlobalLookIntent,
+    SceneIntent,
+    ShotSemanticAnalysis
+)
+
+def build_default_scene_intent(group_id: str, semantic: Optional[ShotSemanticAnalysis] = None) -> SceneIntent:
+    if semantic:
+        tod = (semantic.time_of_day or "").lower()
+        env = (semantic.lighting_environment or "").lower()
+        exp = (semantic.exposure_assessment or "balanced").lower()
+        
+        if "night" in tod or "night" in env or "dark" in env or "low_key" in exp:
+            lighting_class = "low_key_night"
+            exposure_class = "low_key"
+            shadow_sat_ceiling = 0.80
+            midtone_sat_ceiling = 1.10
+            exp_bounds = [-0.6, 0.6]
+            rationale = "Preserve low-key night exposure and practical highlights; restrain chroma in deep shadows."
+            anchors = ["practical_lights", "deep_shadows", "faces"]
+        elif "golden" in tod or "sunset" in tod or "golden" in env:
+            lighting_class = "golden_hour"
+            exposure_class = "balanced"
+            shadow_sat_ceiling = 0.95
+            midtone_sat_ceiling = 1.25
+            exp_bounds = [-0.8, 0.8]
+            rationale = "Preserve warm golden-hour ambience with natural contrast."
+            anchors = ["warm_highlights", "natural_skin"]
+        else:
+            lighting_class = "daylight"
+            exposure_class = exp if exp in ["balanced", "underexposed", "overexposed", "high_key"] else "balanced"
+            shadow_sat_ceiling = 0.95
+            midtone_sat_ceiling = 1.30
+            exp_bounds = [-1.0, 1.0]
+            rationale = "Maintain balanced daylight exposure and faithful tonal distribution."
+            anchors = ["midtone_contrast", "neutral_whites"]
+            
+        return SceneIntent(
+            scene_group_id=group_id,
+            lighting_class=lighting_class,
+            exposure_class=exposure_class,
+            scene_mood="cinematic",
+            source_relative_exposure_bounds=exp_bounds,
+            target_tonal_rules=["Preserve readable midtones", "Prevent unnatural shadow color tint"],
+            shadow_saturation_ceiling=shadow_sat_ceiling,
+            midtone_saturation_ceiling=midtone_sat_ceiling,
+            contrast_trim_bounds=[0.85, 1.15],
+            saturation_trim_bounds=[0.70, 1.20],
+            protected_visual_anchors=anchors,
+            confidence=0.90,
+            concise_rationale=rationale
+        )
+    return SceneIntent(
+        scene_group_id=group_id,
+        lighting_class="daylight",
+        exposure_class="balanced",
+        scene_mood="natural",
+        source_relative_exposure_bounds=[-1.0, 1.0],
+        target_tonal_rules=["Preserve dynamic range"],
+        shadow_saturation_ceiling=0.95,
+        midtone_saturation_ceiling=1.30,
+        contrast_trim_bounds=[0.85, 1.15],
+        saturation_trim_bounds=[0.70, 1.20],
+        protected_visual_anchors=["neutral_whites"],
+        confidence=0.85,
+        concise_rationale="Maintain balanced exposure and natural contrast."
+    )
+
 def synthesize_creative_specification(
     creative_prompt: str,
     research_result: CinematographyResearchResult,
+    scene_analyses: Optional[List[ShotSemanticAnalysis]] = None,
     genai_client: Optional[genai.Client] = None,
     max_retries: int = 3
 ) -> CreativeSpecification:
@@ -116,26 +188,45 @@ def synthesize_creative_specification(
         research_section = f"Cinematography research from Parallel:\n{sources_text}"
     else:
         research_section = "Parallel research: Grounding unavailable. Rely on expert digital intermediate color science principles."
-        
-    prompt = f"""You are a master digital intermediate (DI) colorist.
+
+    # Identify unique scene groups
+    scene_groups_info = ""
+    group_map = {}
+    if scene_analyses:
+        for s in scene_analyses:
+            if s.scene_group_id not in group_map:
+                group_map[s.scene_group_id] = s
+        lines = []
+        for gid, s in group_map.items():
+            lines.append(f"- Scene Group '{gid}': Setting='{s.scene_description}', Lighting='{s.lighting_environment}', Time='{s.time_of_day}', Exposure='{s.exposure_assessment}'")
+        scene_groups_info = "Detected Sequence Scene Groups:\n" + "\n".join(lines)
+    else:
+        scene_groups_info = "Detected Sequence Scene Groups: Single scene group 'group_1'."
+
+    prompt = f"""You are a master digital intermediate (DI) supervisor and scene planning colorist.
 A filmmaker has requested the following creative color direction:
 User Prompt: "{creative_prompt}"
 
 {research_section}
 
-Synthesize this into a technical CreativeSpecification:
-1. Translate artistic descriptions into numeric values:
-   - contrast_intent: 0.90 to 1.35 (for high-contrast neo-noir/cyberpunk, use 1.15 to 1.30; for soft film stocks, use 0.95 to 1.05).
-   - saturation_intent: 0.70 to 1.40 (for vivid neo-noir/cyberpunk, use 1.10 to 1.30; for muted bleach bypass, use 0.60 to 0.85).
+{scene_groups_info}
+
+Synthesize this into a structured CreativeSpecification with both GlobalLookIntent and per-scene SceneIntent:
+1. Global Look Intent (shared sequence-wide creative identity):
+   - contrast_intent: 0.90 to 1.35.
+   - saturation_intent: 0.70 to 1.40.
    - temperature_shift: -25.0 to +25.0.
    - tint_shift: -15.0 to +15.0.
-   - black_mist_diffusion_strength: 0.0 to 1.0 (tonal toe lift parameter).
-2. Explicitly specify highlight bias (e.g. warm amber, cool cyan), shadow bias (e.g. cool slate, deep magenta), and black level treatment (e.g. filmic lifted, deep crushed).
-3. Compute direct normalized RGB offsets for highlights and shadows in [B, G, R] format with components between -0.15 and +0.15:
-   - highlight_rgb_offset: e.g. [0.06, 0.04, -0.05] for cyan highlights, [-0.04, 0.01, 0.05] for warm amber.
-   - shadow_rgb_offset: e.g. [0.06, -0.03, 0.05] for magenta/purple shadows, [0.05, 0.01, -0.03] for cool teal.
-4. Extract 2-4 key cinematography principles.
-5. Output strictly conforming JSON matching the schema.
+   - highlight_bias & shadow_bias (e.g. warm golden, cool slate, neon cyan).
+   - highlight_rgb_offset & shadow_rgb_offset in [-0.15, 0.15] [B, G, R].
+2. Scene Intents: For every scene group listed above, provide a SceneIntent keyed by scene_group_id:
+   - lighting_class: daylight, golden_hour, low_key_night, practical_night, interior_tungsten, etc.
+   - exposure_class: balanced, low_key, high_key, underexposed, etc.
+   - shadow_saturation_ceiling: 0.75-0.85 for dark/night scenes, 0.95-1.10 for daylight.
+   - midtone_saturation_ceiling: 1.10-1.35.
+   - concise_rationale: 1-sentence colorist lighting intent for this scene.
+3. Extract 2-4 key cinematography principles.
+4. Output strictly conforming JSON matching CreativeSpecification.
 """
     
     models_to_try = [
@@ -162,12 +253,36 @@ Synthesize this into a technical CreativeSpecification:
                 spec: CreativeSpecification = response.parsed
                 spec.synthesis_mode = "grounded" if research_result.is_grounded else "ungrounded"
                 spec.citations = research_result.sources if research_result.is_grounded else []
+
+                # Ensure global_look is populated
+                if not spec.global_look:
+                    spec.global_look = GlobalLookIntent(
+                        look_title=spec.look_title,
+                        base_contrast=spec.contrast_intent,
+                        base_saturation=spec.saturation_intent,
+                        shadow_bias=spec.shadow_bias,
+                        highlight_bias=spec.highlight_bias,
+                        highlight_rgb_offset=spec.highlight_rgb_offset,
+                        shadow_rgb_offset=spec.shadow_rgb_offset,
+                        black_level_character=spec.black_level_treatment,
+                        global_temperature_intent=spec.temperature_shift,
+                        global_tint_intent=spec.tint_shift,
+                        black_mist_diffusion_strength=spec.black_mist_diffusion_strength
+                    )
+
+                # Ensure every detected scene group has a SceneIntent
+                if group_map:
+                    for gid, sem in group_map.items():
+                        if gid not in spec.scene_intents:
+                            spec.scene_intents[gid] = build_default_scene_intent(gid, sem)
+                elif not spec.scene_intents:
+                    spec.scene_intents["group_1"] = build_default_scene_intent("group_1")
+
                 return spec
             except Exception as e:
                 last_error = e
                 err_str = str(e)
                 if "prepayment credits are depleted" in err_str.lower():
-                    # Billing account depletion cannot be resolved by immediate retries
                     break
                 elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
                     time.sleep(1.5 * (attempt + 1))
@@ -183,6 +298,25 @@ Synthesize this into a technical CreativeSpecification:
         )
 
     print(f"[Synthesizer Warning] All creative synthesis models failed: {fallback_reason}. Using neutral baseline.")
+    
+    fallback_global = GlobalLookIntent(
+        look_title="Neutral Photographic Baseline",
+        base_contrast=1.0,
+        base_saturation=1.0,
+        shadow_bias="neutral",
+        highlight_bias="neutral",
+        highlight_rgb_offset=[0.0, 0.0, 0.0],
+        shadow_rgb_offset=[0.0, 0.0, 0.0],
+        black_level_character="neutral"
+    )
+
+    fallback_scene_intents = {}
+    if group_map:
+        for gid, sem in group_map.items():
+            fallback_scene_intents[gid] = build_default_scene_intent(gid, sem)
+    else:
+        fallback_scene_intents["group_1"] = build_default_scene_intent("group_1")
+
     return CreativeSpecification(
         look_title="Neutral Photographic Baseline",
         target_aesthetic=creative_prompt,
@@ -199,5 +333,7 @@ Synthesize this into a technical CreativeSpecification:
         tint_shift=0.0,
         black_mist_diffusion_strength=0.0,
         cinematography_principles=["Preserve source dynamic range", "Neutral color reproduction"],
-        citations=research_result.sources if research_result.is_grounded else []
+        citations=research_result.sources if research_result.is_grounded else [],
+        global_look=fallback_global,
+        scene_intents=fallback_scene_intents
     )

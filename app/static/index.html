@@ -111,16 +111,15 @@
             <div class="creative-prompt-area">
                 <div class="form-group">
                     <label for="creative-prompt">Creative Direction & Aesthetic Intent</label>
-                    <textarea id="creative-prompt" class="form-control prompt-input" rows="2" placeholder="Specify film stock, lighting style, or diffusion intent...">Kodak Portra 800 film stock emulation with warm golden highlights, rich shadows</textarea>
+                    <textarea id="creative-prompt" class="form-control prompt-input" rows="3" placeholder="Specify film stock, lighting style, or diffusion intent...">Create a warm 800-speed color-negative aesthetic inspired by Portra 800, without attempting exact film-stock emulation. Use soft-to-medium contrast, moderately rich but controlled saturation, gently lifted filmic blacks, warm amber highlights, neutral-to-subtly cool shadows, smooth highlight roll-off, and detailed natural midtones. Preserve each scene’s intended exposure and keep night scenes naturally dark. Avoid a global orange or yellow wash, excessive saturation, crushed shadows, and forced luminance matching between unrelated scenes.</textarea>
                 </div>
                 
                 <div class="prompt-chips">
                     <span class="chip-label">Presets:</span>
-                    <button class="chip" data-prompt="Kodak Portra 800 film stock emulation with warm golden highlights, rich shadows">Portra 800 Look</button>
-                    <button class="chip" data-prompt="Restrained desert science-fiction aesthetic. Warm golden highlights, muted saturation, cool slate shadows.">Dune Sci-Fi</button>
-                    <button class="chip" data-prompt="Moody neo-noir cyberpunk aesthetic with vibrant neon cyan and magenta rim lighting, deep blacks, high contrast.">Neo-Noir</button>
-                    <button class="chip" data-prompt="Lush natural golden hour lighting with warm amber tones, gentle contrast, and rich healthy shadows.">Golden Hour</button>
-                    <button class="chip" data-prompt="High-contrast desaturated military thriller bleach bypass look with gritty textures and cold metallic shadows.">Bleach Bypass</button>
+                    <button class="chip chip-active" data-prompt="Create a warm 800-speed color-negative aesthetic inspired by Portra 800, without attempting exact film-stock emulation. Use soft-to-medium contrast, moderately rich but controlled saturation, gently lifted filmic blacks, warm amber highlights, neutral-to-subtly cool shadows, smooth highlight roll-off, and detailed natural midtones. Preserve each scene’s intended exposure and keep night scenes naturally dark. Avoid a global orange or yellow wash, excessive saturation, crushed shadows, and forced luminance matching between unrelated scenes.">Warm 800 Negative</button>
+                    <button class="chip" data-prompt="Create a contemporary silver-retention, bleach-bypass-inspired thriller aesthetic. Use firm high contrast, dense neutral blacks, substantially restrained saturation, cool steel-blue shadows, mostly neutral highlights, crisp midtone separation, and controlled highlight roll-off. Preserve subject readability and practical-light detail while maintaining the source scene’s lighting intent. Avoid warm golden highlights, orange coloration, teal-and-orange blockbuster styling, pastel lifted blacks, and excessive colour saturation.">Silver Retention</button>
+                    <button class="chip" data-prompt="Create a cool, overcast Nordic drama aesthetic. Use soft low contrast, restrained saturation, clean neutral whites and highlights, subtly blue-slate shadows, a gently lifted black toe, broad readable midtones, and delicate highlight compression. Preserve quiet natural lighting and the exposure character of each individual scene. Avoid amber or golden warmth, aggressive teal-and-orange separation, crushed blacks, neon colour, excessive contrast, and global luminance matching across different lighting environments.">Nordic Soft Light</button>
+                    <button class="chip" data-prompt="Create a controlled neon-noir night aesthetic with cyan-teal shadows and magenta-violet highlights and practical lights. Use moderately strong contrast, deep but readable blacks, vivid colour in illuminated midtones, smooth highlight compression, and restrained saturation in deep shadows. Preserve low-key night exposure and important subject detail; do not brighten night scenes toward daylight. Avoid a global cyan or purple wash, oversaturated blacks, channel clipping, crushed midtones, excessive global saturation, and warm amber dominance.">Neon Nocturne</button>
                 </div>
             </div>
 
@@ -301,6 +300,9 @@
                     <div class="metric-subtext">Protected shadows & highlights</div>
                 </div>
             </div>
+
+            <!-- EFFECTIVE GRADE PANEL -->
+            <div id="effective-grade-panel" class="effective-grade-card" style="display:none;"></div>
 
             <div class="explanation-grid">
                 <div class="explanation-box">

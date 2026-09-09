@@ -1,6 +1,6 @@
 from typing import Tuple, List, Union, Optional
 import numpy as np
-from app.models.analysis import ShotMetrics
+from app.models.analysis import ShotMetrics, SceneIntent
 from app.models.grade import ConsistencyScore, GradePlan
 from app.media.ffmpeg import probe_video, extract_sampled_frames
 from app.media.color import aggregate_shot_metrics, compute_consistency_score
@@ -15,7 +15,9 @@ def evaluate_grade(
     height: int = 1080,
     duration_sec: float = 3.0,
     ref_plan: Optional[GradePlan] = None,
-    cand_plan: Optional[GradePlan] = None
+    cand_plan: Optional[GradePlan] = None,
+    scene_intent: Optional[SceneIntent] = None,
+    source_metrics: Optional[ShotMetrics] = None
 ) -> Tuple[ShotMetrics, ConsistencyScore]:
     if isinstance(graded_video_or_frames, str):
         # Rendered video path
@@ -51,6 +53,9 @@ def evaluate_grade(
         candidate=graded_metrics,
         evaluation_mode=evaluation_mode,
         ref_plan=ref_plan,
-        cand_plan=cand_plan
+        cand_plan=cand_plan,
+        scene_intent=scene_intent,
+        graded_frames=frames,
+        source_metrics=source_metrics
     )
     return graded_metrics, score

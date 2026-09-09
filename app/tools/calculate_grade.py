@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
-from app.models.analysis import ShotMetrics, ShotSemanticAnalysis, CreativeSpecification, InputProfileAssessment
+from app.models.analysis import ShotMetrics, ShotSemanticAnalysis, CreativeSpecification, InputProfileAssessment, SceneIntent
 from app.models.grade import (
     GradePlan,
     ColorGradeParams,
@@ -58,6 +58,7 @@ def build_grade_plan(
     target: ShotMetrics,
     target_semantic: Optional[ShotSemanticAnalysis] = None,
     creative_spec: Optional[CreativeSpecification] = None,
+    scene_intent: Optional[SceneIntent] = None,
     is_reference_shot: bool = False,
     is_same_scene: bool = False,
     color_profile: str = "auto",
@@ -184,19 +185,41 @@ def build_grade_plan(
             black_toe_lift=0.0
         )
         
-    # 5. SCENE-SPECIFIC TRIM (Preserves natural night/day depth)
+    # 5. SCENE-SPECIFIC TRIM (Preserves scene-appropriate lighting intent without unconditional night darkening)
     trim_ev = 0.0
     trim_cont = 1.0
     trim_sat = 1.0
     trim_lift = 0.0
     
-    if target_semantic:
-        if target_semantic.time_of_day == "night" and not is_same_scene:
-            # Preserve deep night black floor and mood
-            trim_ev -= 0.35
-            trim_cont = 1.05
+    if scene_intent is None and creative_spec and target_semantic:
+        scene_intent = creative_spec.get_scene_intent(target_semantic.scene_group_id)
+
+    if scene_intent and not is_same_scene and not is_reference_shot:
+        exp_class = scene_intent.exposure_class.lower()
+        min_ev, max_ev = scene_intent.source_relative_exposure_bounds
+        
+        # Check source condition from target metrics
+        is_target_dark = (target.p50_luminance < 20.0 or target.avg_luminance < 35.0)
+        
+        if exp_class in ["underexposed", "low_key_underexposed"] and is_target_dark:
+            # Allow modest lift when doing so restores readable midtones without destroying intended night mood
+            trim_ev = float(np.clip(0.35, min_ev, max_ev))
             trim_lift = 1.0
-        elif target_semantic.time_of_day == "golden_hour":
+        elif exp_class in ["overexposed", "blown_out"]:
+            # Reduce washed out scene within bounds
+            trim_ev = float(np.clip(-0.35, min_ev, max_ev))
+        else:
+            # Balanced / intentionally low-key: NO automatic exposure reduction
+            trim_ev = 0.0
+            
+        # Saturation ceiling handling for dark scenes
+        if scene_intent.lighting_class in ["low_key_night", "night", "dark_interior"]:
+            if scene_intent.shadow_saturation_ceiling < 1.0:
+                trim_sat = float(scene_intent.shadow_saturation_ceiling)
+        elif scene_intent.lighting_class == "golden_hour":
+            trim_sat = 1.05
+    elif target_semantic:
+        if target_semantic.time_of_day == "golden_hour":
             trim_sat = 1.05
             
     plan.scene_trim = SceneTrimParams(

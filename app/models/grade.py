@@ -78,6 +78,26 @@ class OutputTransformParams(BaseModel):
     highlight_compression_factor: float = Field(2.0, ge=1.0, le=4.0, description="Soft roll-off compression curve slope")
     clip_protection: bool = Field(True, description="Enforce digital clipping protection")
 
+from app.models.analysis import LookContinuityScore, SceneHealthScore
+
+class EffectiveGradeSummary(BaseModel):
+    shot_id: str
+    scene_group_id: str = "group_1"
+    scene_class: str = "daylight"
+    scene_rationale: str = ""
+    input_profile: Dict[str, Any] = Field(default_factory=dict)
+    technical_exposure_ev: float = 0.0
+    scene_match_exposure_ev: float = 0.0
+    scene_trim_exposure_ev: float = 0.0
+    total_exposure_ev: float = 0.0
+    shared_contrast: float = 1.0
+    scene_contrast_trim: float = 1.0
+    effective_contrast: float = 1.0
+    shared_saturation: float = 1.0
+    scene_saturation_trim: float = 1.0
+    effective_saturation: float = 1.0
+    revision_state: str = "ACCEPTED"
+
 class GradePlan(BaseModel):
     shot_id: str
     is_same_scene: bool = Field(False, description="True if target is in the same lighting context as reference")
@@ -109,6 +129,42 @@ class GradePlan(BaseModel):
             lab_b_offset=self.scene_match.lab_b_offset,
             shadow_rgb_offset=self.creative_look.shadow_rgb_offset,
             highlight_rgb_offset=self.creative_look.highlight_rgb_offset
+        )
+
+    def compute_effective_summary(
+        self,
+        scene_group_id: str = "group_1",
+        scene_class: str = "daylight",
+        scene_rationale: str = "",
+        input_profile_dict: Optional[Dict[str, Any]] = None,
+        camera_profile: Optional[str] = None,
+        revision_state: str = "ACCEPTED"
+    ) -> EffectiveGradeSummary:
+        total_exposure = round(self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev, 3)
+        effective_contrast = round(self.creative_look.contrast * self.scene_trim.trim_contrast, 4)
+        effective_sat = round(self.creative_look.saturation * self.scene_trim.trim_saturation, 4)
+
+        input_dict = input_profile_dict or {"resolved": camera_profile or self.input_transform.profile}
+        if "resolved" not in input_dict:
+            input_dict["resolved"] = camera_profile or self.input_transform.profile
+
+        return EffectiveGradeSummary(
+            shot_id=self.shot_id,
+            scene_group_id=scene_group_id,
+            scene_class=scene_class,
+            scene_rationale=scene_rationale,
+            input_profile=input_dict,
+            technical_exposure_ev=round(self.technical_balance.exposure_ev, 3),
+            scene_match_exposure_ev=0.0,
+            scene_trim_exposure_ev=round(self.scene_trim.trim_exposure_ev, 3),
+            total_exposure_ev=total_exposure,
+            shared_contrast=round(self.creative_look.contrast, 3),
+            scene_contrast_trim=round(self.scene_trim.trim_contrast, 3),
+            effective_contrast=effective_contrast,
+            shared_saturation=round(self.creative_look.saturation, 3),
+            scene_saturation_trim=round(self.scene_trim.trim_saturation, 3),
+            effective_saturation=effective_sat,
+            revision_state=revision_state
         )
 
 class ColorGradeParams(BaseModel):
@@ -163,3 +219,10 @@ class GradeResult(BaseModel):
     revisions_performed: int = 0
     history: List[RevisionRecord] = Field(default_factory=list)
     explanation: str
+    evaluation_mode: str = Field("same_scene_match", description="same_scene_match or cross_scene_look_continuity")
+    grade_summary: Optional[EffectiveGradeSummary] = None
+    look_continuity: Optional[LookContinuityScore] = None
+    scene_health: Optional[SceneHealthScore] = None
+    before_proxy_path: Optional[str] = None
+    after_proxy_path: Optional[str] = None
+    original_source_path: Optional[str] = None

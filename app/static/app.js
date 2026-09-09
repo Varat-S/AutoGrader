@@ -96,8 +96,21 @@ function setupEventListeners() {
     // Aesthetic Presets
     promptChips.forEach(chip => {
         chip.addEventListener("click", () => {
+            promptChips.forEach(c => c.classList.remove("chip-active"));
+            chip.classList.add("chip-active");
             promptInput.value = chip.getAttribute("data-prompt");
             promptInput.focus();
+        });
+    });
+
+    promptInput.addEventListener("input", () => {
+        const val = promptInput.value.trim();
+        promptChips.forEach(c => {
+            if (c.getAttribute("data-prompt").trim() === val) {
+                c.classList.add("chip-active");
+            } else {
+                c.classList.remove("chip-active");
+            }
         });
     });
 
@@ -565,7 +578,7 @@ function renderResults(result, sourceVideos) {
     titleRow.className = "spec-title-row";
     const titleDiv = document.createElement("div");
     titleDiv.className = "spec-title";
-    titleDiv.textContent = `Look: "${spec.look_title}" (Reference Shot: ${result.reference_shot_id})`;
+    titleDiv.textContent = `Shared Sequence Look: "${spec.look_title}" (Master Reference: ${result.reference_shot_id})`;
     titleRow.appendChild(titleDiv);
     specCard.appendChild(titleRow);
     
@@ -573,7 +586,7 @@ function renderResults(result, sourceVideos) {
     descP.style.fontSize = "0.85rem";
     descP.style.color = "#64748b";
     descP.style.marginBottom = "0.5rem";
-    descP.textContent = spec.target_aesthetic;
+    descP.textContent = `${spec.target_aesthetic} — Sequence-wide creative transform is immutable once approved.`;
     specCard.appendChild(descP);
     
     const badgesDiv = document.createElement("div");
@@ -662,10 +675,22 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     
     const afterVideoUrl = `/api/jobs/${jobId}/files/${gradedVideoFilename}`;
     const lutUrl = `/api/jobs/${jobId}/files/${lutFilename}`;
+
+    // Prefer matched browser proxies for synchronized split slider wipe
+    let sliderBeforeUrl = beforeVideoUrl;
+    let sliderAfterUrl = afterVideoUrl;
+    if (res.before_proxy_path) {
+        const bName = res.before_proxy_path.split("/").pop().split("\\").pop();
+        sliderBeforeUrl = `/api/jobs/${jobId}/files/${bName}`;
+    }
+    if (res.after_proxy_path) {
+        const aName = res.after_proxy_path.split("/").pop().split("\\").pop();
+        sliderAfterUrl = `/api/jobs/${jobId}/files/${aName}`;
+    }
     
     // Update Split Slider Players
-    playerSliderBefore.src = beforeVideoUrl;
-    playerSliderAfter.src = afterVideoUrl;
+    playerSliderBefore.src = sliderBeforeUrl;
+    playerSliderAfter.src = sliderAfterUrl;
     playerSliderBefore.currentTime = 0;
     playerSliderAfter.currentTime = 0;
     sliderTimeline.value = 0;
@@ -699,9 +724,88 @@ function displayShotResult(res, shotIdx, sourceVideos) {
         document.getElementById("score-delta").textContent = delta >= 0 ? `+${delta} points consistency${stateText}` : `Master Style Established${stateText}`;
     }
     
-    document.getElementById("metric-tone").textContent = `${Math.round(res.after_consistency.tonal_similarity)} / 100`;
-    document.getElementById("metric-chroma").textContent = `${Math.round(res.after_consistency.chromatic_similarity)} / 100`;
-    document.getElementById("metric-health").textContent = `${Math.round(res.after_consistency.clipping_health)} / 100`;
+    // Mode-Appropriate Metrics
+    const isSameScene = (res.evaluation_mode === "same_scene_match");
+    if (isSameScene) {
+        document.querySelector("#metric-tone").previousElementSibling.textContent = "Tonal & Exposure Similarity";
+        document.querySelector("#metric-tone").nextElementSibling.textContent = "Quantile-quantile L* alignment";
+        document.getElementById("metric-tone").textContent = `${Math.round(res.after_consistency.tonal_similarity)} / 100`;
+
+        document.querySelector("#metric-chroma").previousElementSibling.textContent = "Chromatic CIELAB Harmony";
+        document.querySelector("#metric-chroma").nextElementSibling.textContent = "Delta E centroid convergence";
+        document.getElementById("metric-chroma").textContent = `${Math.round(res.after_consistency.chromatic_similarity)} / 100`;
+
+        document.querySelector("#metric-health").previousElementSibling.textContent = "Clipping & Image Health";
+        document.querySelector("#metric-health").nextElementSibling.textContent = "Protected shadows & highlights";
+        document.getElementById("metric-health").textContent = `${Math.round(res.after_consistency.clipping_health)} / 100`;
+    } else {
+        document.querySelector("#metric-tone").previousElementSibling.textContent = "Creative Contrast Adherence";
+        document.querySelector("#metric-tone").nextElementSibling.textContent = "Probe tone response invariant";
+        const toneVal = res.look_continuity ? Math.round(res.look_continuity.contrast_slope_adherence) : Math.round(res.after_consistency.tonal_similarity);
+        document.getElementById("metric-tone").textContent = `${toneVal} / 100`;
+
+        document.querySelector("#metric-chroma").previousElementSibling.textContent = "Probe Chromatic Harmony";
+        document.querySelector("#metric-chroma").nextElementSibling.textContent = "Split-tone & saturation tracking";
+        const chromaVal = res.look_continuity ? Math.round(res.look_continuity.probe_chromatic_harmony) : Math.round(res.after_consistency.chromatic_similarity);
+        document.getElementById("metric-chroma").textContent = `${chromaVal} / 100`;
+
+        document.querySelector("#metric-health").previousElementSibling.textContent = "Scene Image Health";
+        document.querySelector("#metric-health").nextElementSibling.textContent = res.scene_health && res.scene_health.hard_gates_passed ? "Hard gates passed (exposure, midtones, shadow sat)" : "Gate failure detected";
+        const healthVal = res.scene_health ? Math.round(res.scene_health.overall_score) : Math.round(res.after_consistency.clipping_health);
+        document.getElementById("metric-health").textContent = `${healthVal} / 100`;
+    }
+    
+    // Effective Grade Summary Panel
+    const effPanel = document.getElementById("effective-grade-panel");
+    if (effPanel && res.grade_summary) {
+        effPanel.style.display = "block";
+        const summ = res.grade_summary;
+        effPanel.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+                <div style="font-weight:700; font-size:0.95rem; color:var(--text-primary);">
+                    Effective Grade Breakdown for ${res.target_shot_id}
+                </div>
+                <span class="spec-badge" style="background:#e0f2fe; color:#0369a1; font-weight:600;">
+                    Profile: ${summ.camera_profile}
+                </span>
+            </div>
+            <div class="effective-grid">
+                <div class="effective-cell">
+                    <div class="effective-cell-title">1. Technical Balance</div>
+                    <div class="effective-cell-val">
+                        Exp: ${summ.technical_balance.exposure_ev > 0 ? '+' : ''}${summ.technical_balance.exposure_ev.toFixed(2)} EV<br>
+                        WB: ${summ.technical_balance.temperature > 0 ? '+' : ''}${summ.technical_balance.temperature.toFixed(1)} / ${summ.technical_balance.tint > 0 ? '+' : ''}${summ.technical_balance.tint.toFixed(1)}
+                    </div>
+                </div>
+                <div class="effective-cell">
+                    <div class="effective-cell-title">2. Shared Creative Look (Immutable)</div>
+                    <div class="effective-cell-val">
+                        Contrast: ${summ.shared_creative_look.contrast.toFixed(2)}x<br>
+                        Sat: ${summ.shared_creative_look.saturation.toFixed(2)}x<br>
+                        Splits: ${summ.shared_creative_look.highlight_bias} / ${summ.shared_creative_look.shadow_bias}
+                    </div>
+                </div>
+                <div class="effective-cell">
+                    <div class="effective-cell-title">3. Scene Trim</div>
+                    <div class="effective-cell-val">
+                        Exp: ${summ.scene_trim.trim_exposure_ev > 0 ? '+' : ''}${summ.scene_trim.trim_exposure_ev.toFixed(2)} EV<br>
+                        Contrast: ${summ.scene_trim.trim_contrast.toFixed(2)}x<br>
+                        Sat: ${summ.scene_trim.trim_saturation.toFixed(2)}x
+                    </div>
+                </div>
+                <div class="effective-cell" style="border-left: 3px solid var(--accent-emerald);">
+                    <div class="effective-cell-title" style="color:var(--accent-emerald);">4. Composed Effective Grade</div>
+                    <div class="effective-cell-val" style="font-weight:600;">
+                        Net Exp: ${summ.effective_exposure_ev > 0 ? '+' : ''}${summ.effective_exposure_ev.toFixed(2)} EV<br>
+                        Net Contrast: ${summ.effective_contrast.toFixed(2)}x<br>
+                        Net Saturation: ${summ.effective_saturation.toFixed(2)}x
+                    </div>
+                </div>
+            </div>
+        `;
+    } else if (effPanel) {
+        effPanel.style.display = "none";
+    }
     
     document.getElementById("explanation-text").textContent = res.explanation;
     
@@ -709,7 +813,7 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     const btnVid = document.getElementById("btn-download-video");
     btnVid.href = afterVideoUrl;
     btnVid.download = `${res.target_shot_id}_graded.mp4`;
-    btnVid.textContent = `Download ${res.target_shot_id} Video (.mp4)`;
+    btnVid.textContent = `Download ${res.target_shot_id} Master Video (.mp4)`;
     
     const btnLut = document.getElementById("btn-download-lut");
     btnLut.href = lutUrl;

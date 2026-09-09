@@ -4,6 +4,9 @@ import uuid
 import threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,7 +47,7 @@ MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024 # 500 MB
 MAX_CLIPS_PER_JOB = 4
 
 class RunJobRequest(BaseModel):
-    creative_prompt: str = Field(..., max_length=500, description="Filmmaker aesthetic description (max 500 characters)")
+    creative_prompt: str = Field(..., max_length=1000, description="Filmmaker aesthetic description (max 1000 characters)")
     reference_index: Optional[int] = Field(None, ge=0, le=3, description="Optional 0-indexed reference clip selection")
     color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_rec2020', 'generic_log_experimental'")
     input_profiles: Optional[List[ShotProfileSelection]] = Field(None, description="Per-shot typed profile selections")
@@ -139,7 +142,9 @@ async def upload_videos(job_id: str, files: List[UploadFile] = File(...)):
             raise HTTPException(status_code=400, detail=f"Unsupported file format '{ext}'. Allowed: {ALLOWED_EXTENSIONS}")
             
         safe_filename = Path(f.filename).name
-        dest_path = job_source_dir / safe_filename
+        shot_num = len(job["source_videos"]) + 1
+        dest_filename = f"shot_{shot_num}_{safe_filename}"
+        dest_path = job_source_dir / dest_filename
         
         # Save file with size enforcement
         total_bytes = 0
@@ -179,7 +184,12 @@ def load_demo_sequence(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
         
-    fixtures_dir = Path("tests/fixtures/sample_videos")
+    demo_dir = Path("tests/fixtures/demo_sequence")
+    if demo_dir.exists() and list(demo_dir.glob("*.mp4")):
+        fixtures_dir = demo_dir
+    else:
+        fixtures_dir = Path("tests/fixtures/sample_videos")
+
     if not fixtures_dir.exists():
         raise HTTPException(status_code=500, detail="Demo fixtures not found")
         
@@ -187,15 +197,16 @@ def load_demo_sequence(job_id: str):
     job_source_dir = JOBS_DIR / job_id / "source"
     
     loaded = []
-    for sample in sorted(fixtures_dir.glob("*.mp4")):
-        dest = job_source_dir / sample.name
+    for idx, sample in enumerate(sorted(fixtures_dir.glob("*.mp4")), len(job["source_videos"]) + 1):
+        dest_filename = f"shot_{idx}_{sample.name}"
+        dest = job_source_dir / dest_filename
         shutil.copyfile(sample, dest)
         dest_str = str(dest)
         if dest_str not in job["source_videos"]:
             job["source_videos"].append(dest_str)
-        loaded.append(sample.name)
+        loaded.append(dest_filename)
         
-    job["events"].append(f"Loaded {len(loaded)} benchmark demo clip(s).")
+    job["events"].append(f"Loaded {len(loaded)} demo clip(s).")
     return {"status": "success", "loaded": loaded, "all_clips": [Path(p).name for p in job["source_videos"]]}
 
 @app.get("/api/jobs/{job_id}/assess_profiles")

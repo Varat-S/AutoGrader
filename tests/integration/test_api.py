@@ -75,3 +75,30 @@ def test_api_assess_profiles_and_duplicate_run_protection():
         )
         assert res_dup.status_code == 400
         assert "already" in res_dup.json()["detail"].lower()
+
+def test_api_accepts_all_four_preset_prompts():
+    from unittest.mock import patch
+    prompts = [
+        "Create a warm 800-speed color-negative aesthetic inspired by Portra 800, without attempting exact film-stock emulation. Use soft-to-medium contrast, moderately rich but controlled saturation, gently lifted filmic blacks, warm amber highlights, neutral-to-subtly cool shadows, smooth highlight roll-off, and detailed natural midtones. Preserve each scene’s intended exposure and keep night scenes naturally dark. Avoid a global orange or yellow wash, excessive saturation, crushed shadows, and forced luminance matching between unrelated scenes.",
+        "Create a contemporary silver-retention, bleach-bypass-inspired thriller aesthetic. Use firm high contrast, dense neutral blacks, substantially restrained saturation, cool steel-blue shadows, mostly neutral highlights, crisp midtone separation, and controlled highlight roll-off. Preserve subject readability and practical-light detail while maintaining the source scene’s lighting intent. Avoid warm golden highlights, orange coloration, teal-and-orange blockbuster styling, pastel lifted blacks, and excessive colour saturation.",
+        "Create a cool, overcast Nordic drama aesthetic. Use soft low contrast, restrained saturation, clean neutral whites and highlights, subtly blue-slate shadows, a gently lifted black toe, broad readable midtones, and delicate highlight compression. Preserve quiet natural lighting and the exposure character of each individual scene. Avoid amber or golden warmth, aggressive teal-and-orange separation, crushed blacks, neon colour, excessive contrast, and global luminance matching across different lighting environments.",
+        "Create a controlled neon-noir night aesthetic with cyan-teal shadows and magenta-violet highlights and practical lights. Use moderately strong contrast, deep but readable blacks, vivid colour in illuminated midtones, smooth highlight compression, and restrained saturation in deep shadows. Preserve low-key night exposure and important subject detail; do not brighten night scenes toward daylight. Avoid a global cyan or purple wash, oversaturated blacks, channel clipping, crushed midtones, excessive global saturation, and warm amber dominance."
+    ]
+
+    for p in prompts:
+        res = client.post("/api/jobs")
+        assert res.status_code == 200
+        job_id = res.json()["job_id"]
+        client.post(f"/api/jobs/{job_id}/load_demo")
+
+        with patch("app.main.run_agent_task"):
+            res_run = client.post(
+                f"/api/jobs/{job_id}/run",
+                json={
+                    "creative_prompt": p,
+                    "reference_index": 0,
+                    "color_profile": "rec709"
+                }
+            )
+            assert res_run.status_code == 200, f"Prompt failed validation: {res_run.text}"
+            assert res_run.json()["status"] == "queued"
