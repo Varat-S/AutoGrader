@@ -49,7 +49,7 @@ MAX_CLIPS_PER_JOB = 4
 class RunJobRequest(BaseModel):
     creative_prompt: str = Field(..., max_length=1000, description="Filmmaker aesthetic description (max 1000 characters)")
     reference_index: Optional[int] = Field(None, ge=0, le=3, description="Optional 0-indexed reference clip selection")
-    color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_rec2020', 'dji_dlog_dgamut', 'generic_log_experimental'")
+    color_profile: str = Field("auto", description="'auto', 'rec709', 'sony_slog3_sgamut3cine', 'apple_log_rec2020', 'dji_dlog_dgamut', 'dji_dlog_m_rec709', 'generic_log_experimental'")
     input_profiles: Optional[List[ShotProfileSelection]] = Field(None, description="Per-shot typed profile selections")
 
 def run_agent_task(
@@ -287,11 +287,13 @@ def run_job(job_id: str, request: RunJobRequest, background_tasks: BackgroundTas
         seq_prof = "apple_log_rec2020"
     elif seq_prof in ["rec.709", "bt709"]:
         seq_prof = "rec709"
+    elif seq_prof in ["dji_dlog_m", "dlog_m", "dlog-m", "dji-dlog-m", "dji_dlog_m_rec709"]:
+        seq_prof = "dji_dlog_m_rec709"
     elif seq_prof in ["dji_dlog", "dlog", "dji"]:
         seq_prof = "dji_dlog_dgamut"
         
     valid_sequence_profiles = {
-        "auto", "rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "generic_log_experimental"
+        "auto", "rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "dji_dlog_m_rec709", "generic_log_experimental"
     }
     if seq_prof not in valid_sequence_profiles:
         raise HTTPException(status_code=400, detail=f"Invalid color_profile '{request.color_profile}'. Valid options: {sorted(list(valid_sequence_profiles))}")

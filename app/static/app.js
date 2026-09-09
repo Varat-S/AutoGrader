@@ -292,6 +292,7 @@ function updateClipsList(filenames) {
             { value: "sony_slog3_sgamut3cine", label: "Sony S-Log3 / S-Gamut3.Cine" },
             { value: "apple_log_rec2020", label: "Apple Log / Rec.2020" },
             { value: "dji_dlog_dgamut", label: "DJI D-Log / D-Gamut" },
+            { value: "dji_dlog_m_rec709", label: "DJI D-Log M / Rec.709" },
             { value: "generic_log_experimental", label: "Generic Log / Flat" }
         ];
         
@@ -779,54 +780,128 @@ function displayShotResult(res, shotIdx, sourceVideos) {
         document.getElementById("metric-health").textContent = `${healthVal} / 100`;
     }
     
-    // Effective Grade Summary Panel
+    // Effective Grade Summary Panel (Safe DOM construction, no innerHTML)
     const effPanel = document.getElementById("effective-grade-panel");
     if (effPanel && res.grade_summary) {
         effPanel.style.display = "block";
+        effPanel.innerHTML = "";
         const summ = res.grade_summary;
-        effPanel.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-                <div style="font-weight:700; font-size:0.95rem; color:var(--text-primary);">
-                    Effective Grade Breakdown for ${res.target_shot_id}
-                </div>
-                <span class="spec-badge" style="background:#e0f2fe; color:#0369a1; font-weight:600;">
-                    Profile: ${summ.camera_profile}
-                </span>
-            </div>
-            <div class="effective-grid">
-                <div class="effective-cell">
-                    <div class="effective-cell-title">1. Technical Balance</div>
-                    <div class="effective-cell-val">
-                        Exp: ${summ.technical_balance.exposure_ev > 0 ? '+' : ''}${summ.technical_balance.exposure_ev.toFixed(2)} EV<br>
-                        WB: ${summ.technical_balance.temperature > 0 ? '+' : ''}${summ.technical_balance.temperature.toFixed(1)} / ${summ.technical_balance.tint > 0 ? '+' : ''}${summ.technical_balance.tint.toFixed(1)}
-                    </div>
-                </div>
-                <div class="effective-cell">
-                    <div class="effective-cell-title">2. Shared Creative Look (Immutable)</div>
-                    <div class="effective-cell-val">
-                        Contrast: ${summ.shared_creative_look.contrast.toFixed(2)}x<br>
-                        Sat: ${summ.shared_creative_look.saturation.toFixed(2)}x<br>
-                        Splits: ${summ.shared_creative_look.highlight_bias} / ${summ.shared_creative_look.shadow_bias}
-                    </div>
-                </div>
-                <div class="effective-cell">
-                    <div class="effective-cell-title">3. Scene Trim</div>
-                    <div class="effective-cell-val">
-                        Exp: ${summ.scene_trim.trim_exposure_ev > 0 ? '+' : ''}${summ.scene_trim.trim_exposure_ev.toFixed(2)} EV<br>
-                        Contrast: ${summ.scene_trim.trim_contrast.toFixed(2)}x<br>
-                        Sat: ${summ.scene_trim.trim_saturation.toFixed(2)}x
-                    </div>
-                </div>
-                <div class="effective-cell" style="border-left: 3px solid var(--accent-emerald);">
-                    <div class="effective-cell-title" style="color:var(--accent-emerald);">4. Composed Effective Grade</div>
-                    <div class="effective-cell-val" style="font-weight:600;">
-                        Net Exp: ${summ.effective_exposure_ev > 0 ? '+' : ''}${summ.effective_exposure_ev.toFixed(2)} EV<br>
-                        Net Contrast: ${summ.effective_contrast.toFixed(2)}x<br>
-                        Net Saturation: ${summ.effective_saturation.toFixed(2)}x
-                    </div>
-                </div>
-            </div>
-        `;
+
+        const headerDiv = document.createElement("div");
+        headerDiv.style.display = "flex";
+        headerDiv.style.justifyContent = "space-between";
+        headerDiv.style.alignItems = "center";
+        headerDiv.style.marginBottom = "0.6rem";
+
+        const titleDiv = document.createElement("div");
+        titleDiv.style.fontWeight = "700";
+        titleDiv.style.fontSize = "0.95rem";
+        titleDiv.style.color = "var(--text-primary)";
+        titleDiv.textContent = `Effective Grade Breakdown for ${res.target_shot_id}`;
+        headerDiv.appendChild(titleDiv);
+
+        const badgeSpan = document.createElement("span");
+        badgeSpan.className = "spec-badge";
+        badgeSpan.style.background = "#e0f2fe";
+        badgeSpan.style.color = "#0369a1";
+        badgeSpan.style.fontWeight = "600";
+        badgeSpan.textContent = `Profile: ${summ.camera_profile}`;
+        headerDiv.appendChild(badgeSpan);
+        effPanel.appendChild(headerDiv);
+
+        const gridDiv = document.createElement("div");
+        gridDiv.className = "effective-grid";
+
+        // Cell 1: Technical Balance
+        const cell1 = document.createElement("div");
+        cell1.className = "effective-cell";
+        const c1Title = document.createElement("div");
+        c1Title.className = "effective-cell-title";
+        c1Title.textContent = "1. Technical Balance";
+        const c1Val = document.createElement("div");
+        c1Val.className = "effective-cell-val";
+        const expSign1 = summ.technical_balance.exposure_ev > 0 ? "+" : "";
+        const tSign = summ.technical_balance.temperature > 0 ? "+" : "";
+        const tintSign = summ.technical_balance.tint > 0 ? "+" : "";
+        const l1 = document.createElement("div");
+        l1.textContent = `Exp: ${expSign1}${summ.technical_balance.exposure_ev.toFixed(2)} EV`;
+        const l2 = document.createElement("div");
+        l2.textContent = `WB: ${tSign}${summ.technical_balance.temperature.toFixed(1)} / ${tintSign}${summ.technical_balance.tint.toFixed(1)}`;
+        c1Val.appendChild(l1);
+        c1Val.appendChild(l2);
+        cell1.appendChild(c1Title);
+        cell1.appendChild(c1Val);
+        gridDiv.appendChild(cell1);
+
+        // Cell 2: Shared Creative Look (Immutable)
+        const cell2 = document.createElement("div");
+        cell2.className = "effective-cell";
+        const c2Title = document.createElement("div");
+        c2Title.className = "effective-cell-title";
+        c2Title.textContent = "2. Shared Creative Look (Immutable)";
+        const c2Val = document.createElement("div");
+        c2Val.className = "effective-cell-val";
+        const l3 = document.createElement("div");
+        l3.textContent = `Contrast: ${summ.shared_creative_look.contrast.toFixed(2)}x`;
+        const l4 = document.createElement("div");
+        l4.textContent = `Sat: ${summ.shared_creative_look.saturation.toFixed(2)}x`;
+        const l5 = document.createElement("div");
+        l5.textContent = `Splits: ${summ.shared_creative_look.highlight_bias} / ${summ.shared_creative_look.shadow_bias}`;
+        c2Val.appendChild(l3);
+        c2Val.appendChild(l4);
+        c2Val.appendChild(l5);
+        cell2.appendChild(c2Title);
+        cell2.appendChild(c2Val);
+        gridDiv.appendChild(cell2);
+
+        // Cell 3: Scene Trim
+        const cell3 = document.createElement("div");
+        cell3.className = "effective-cell";
+        const c3Title = document.createElement("div");
+        c3Title.className = "effective-cell-title";
+        c3Title.textContent = "3. Scene Trim";
+        const c3Val = document.createElement("div");
+        c3Val.className = "effective-cell-val";
+        const expSign3 = summ.scene_trim.trim_exposure_ev > 0 ? "+" : "";
+        const l6 = document.createElement("div");
+        l6.textContent = `Exp: ${expSign3}${summ.scene_trim.trim_exposure_ev.toFixed(2)} EV`;
+        const l7 = document.createElement("div");
+        l7.textContent = `Contrast: ${summ.scene_trim.trim_contrast.toFixed(2)}x`;
+        const l8 = document.createElement("div");
+        l8.textContent = `Sat: ${summ.scene_trim.trim_saturation.toFixed(2)}x`;
+        c3Val.appendChild(l6);
+        c3Val.appendChild(l7);
+        c3Val.appendChild(l8);
+        cell3.appendChild(c3Title);
+        cell3.appendChild(c3Val);
+        gridDiv.appendChild(cell3);
+
+        // Cell 4: Composed Effective Grade
+        const cell4 = document.createElement("div");
+        cell4.className = "effective-cell";
+        cell4.style.borderLeft = "3px solid var(--accent-emerald)";
+        const c4Title = document.createElement("div");
+        c4Title.className = "effective-cell-title";
+        c4Title.style.color = "var(--accent-emerald)";
+        c4Title.textContent = "4. Composed Effective Grade";
+        const c4Val = document.createElement("div");
+        c4Val.className = "effective-cell-val";
+        c4Val.style.fontWeight = "600";
+        const expSign4 = summ.effective_exposure_ev > 0 ? "+" : "";
+        const l9 = document.createElement("div");
+        l9.textContent = `Net Exp: ${expSign4}${summ.effective_exposure_ev.toFixed(2)} EV`;
+        const l10 = document.createElement("div");
+        l10.textContent = `Net Contrast: ${summ.effective_contrast.toFixed(2)}x`;
+        const l11 = document.createElement("div");
+        l11.textContent = `Net Saturation: ${summ.effective_saturation.toFixed(2)}x`;
+        c4Val.appendChild(l9);
+        c4Val.appendChild(l10);
+        c4Val.appendChild(l11);
+        cell4.appendChild(c4Title);
+        cell4.appendChild(c4Val);
+        gridDiv.appendChild(cell4);
+
+        effPanel.appendChild(gridDiv);
     } else if (effPanel) {
         effPanel.style.display = "none";
     }

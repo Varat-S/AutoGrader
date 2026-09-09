@@ -74,11 +74,19 @@ def generate_shared_creative_look_lut(
         s_rgb = parse_shadow_bias_rgb(canonical.shadow_bias)
 
     toe_lift = parse_black_level_lift(canonical.black_level_character, canonical.black_mist_diffusion_strength)
+    temp = float(getattr(canonical, "temperature_intent", 0.0) or creative_spec.temperature_shift or 0.0)
+    tint = float(getattr(canonical, "tint_intent", 0.0) or creative_spec.tint_shift or 0.0)
 
-    # Build GradePlan with neutral input, neutral technical balance, neutral match, neutral trim
+    # Build GradePlan with neutral input, global temperature/tint balance, neutral match, neutral trim
+    from app.models.grade import TechnicalBalanceParams
     plan = GradePlan(
         shot_id="shared_creative_look",
         is_same_scene=False,
+        technical_balance=TechnicalBalanceParams(
+            exposure_ev=0.0,
+            temperature=round(temp, 2),
+            tint=round(tint, 2)
+        ),
         creative_look=CreativeLookParams(
             look_title=canonical.look_title,
             contrast=round(canonical.base_contrast, 3),

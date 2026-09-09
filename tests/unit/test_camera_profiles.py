@@ -193,3 +193,54 @@ def test_normalization_health_gate():
     res = assess_normalization_health("flat", metrics, [flat_frame], profile="rec709")
     assert res.state == "PROFILE_CONFIRMATION_REQUIRED"
     assert not res.passed
+
+def test_dji_dlog_m_golden_code_values_and_reversibility():
+    from app.media.color import dji_dlog_m_to_linear, linear_to_dji_dlog_m
+    linear_test = np.array([0.0, 0.01, 0.05, 0.18, 0.50, 1.0, 2.0, 5.0], dtype=np.float32)
+    dlog_m_encoded = linear_to_dji_dlog_m(linear_test)
+
+    # Check black floor is 0.10
+    assert abs(dlog_m_encoded[0] - 0.10) < 1e-4, "D-Log M black floor must be 0.10"
+    # Check 18% middle gray is near 0.46
+    assert 0.44 <= dlog_m_encoded[3] <= 0.48, "D-Log M 18% gray should be ~0.46"
+    # Check 50% luminance is near 0.72
+    assert 0.70 <= dlog_m_encoded[4] <= 0.75, "D-Log M 50% luminance should be ~0.72"
+    # Check 100% white is 1.0
+    assert abs(dlog_m_encoded[5] - 1.0) < 1e-4, "D-Log M 100% white should be 1.0"
+
+    # Reversibility test
+    linear_recovered = dji_dlog_m_to_linear(dlog_m_encoded)
+    np.testing.assert_allclose(linear_test, linear_recovered, atol=1e-5)
+
+def test_dji_dlog_m_dispatcher():
+    # D-Log M 18% gray (norm ~0.46)
+    dlog_m_frame = np.full((30, 30, 3), 0.46, dtype=np.float32)
+    out_dlog_m = apply_input_camera_profile(dlog_m_frame, "dji_dlog_m_rec709")
+    # Must map to standard Rec.709 midtone (~0.38 - 0.46)
+    assert 0.38 <= np.mean(out_dlog_m) <= 0.46
+
+    # Aliases
+    out_alias = apply_input_camera_profile(dlog_m_frame, "dji_dlog_m")
+    np.testing.assert_allclose(out_dlog_m, out_alias, atol=1e-6)
+    out_alias2 = apply_input_camera_profile(dlog_m_frame, "dlog_m")
+    np.testing.assert_allclose(out_dlog_m, out_alias2, atol=1e-6)
+
+def test_luminance_preserving_gamut_compression():
+    from app.media.color import compress_out_of_gamut_rgb, REC709_LUMA_COEFFS
+    # Construct an out-of-gamut pixel where blue channel is negative (e.g. wide gamut saturated red/green)
+    rgb = np.array([[[1.2, 0.4, -0.3]]], dtype=np.float32)
+    orig_y = np.sum(rgb * REC709_LUMA_COEFFS, axis=-1, keepdims=True)
+
+    compressed, neg_pct, mean_comp = compress_out_of_gamut_rgb(rgb)
+    new_y = np.sum(compressed * REC709_LUMA_COEFFS, axis=-1, keepdims=True)
+
+    # 1. Luminance must be 100% preserved
+    np.testing.assert_allclose(orig_y, new_y, atol=1e-6)
+    # 2. Minimum channel must be brought to >= 0
+    assert np.min(compressed) >= -1e-6
+    assert neg_pct > 0.0
+    # 3. Already in-gamut pixels must be unaltered
+    in_gamut = np.array([[[0.5, 0.6, 0.7]]], dtype=np.float32)
+    compressed_in, neg_pct_in, _ = compress_out_of_gamut_rgb(in_gamut)
+    np.testing.assert_allclose(in_gamut, compressed_in, atol=1e-6)
+    assert neg_pct_in == 0.0

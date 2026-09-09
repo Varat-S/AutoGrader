@@ -74,7 +74,7 @@ def build_grade_plan(
     if p_lower == "auto_ask":
         raise ValueError("auto_ask is a pending decision state and cannot be converted into a GradePlan. A concrete profile must be resolved before grading.")
 
-    if p_lower in ["rec709", "rec.709", "bt709", "srgb", "display"]:
+    if p_lower in ["rec709", "rec.709", "bt709", "srgb", "display", "auto"]:
         target_is_log = False
         resolved_profile = "rec709"
     elif "slog3" in p_lower or "s_log3" in p_lower:
@@ -83,6 +83,9 @@ def build_grade_plan(
     elif "apple" in p_lower or p_lower == "apple_log_rec2020":
         target_is_log = True
         resolved_profile = "apple_log_rec2020"
+    elif "dlog_m" in p_lower or "dlog-m" in p_lower or p_lower in ["dji_dlog_m_rec709", "dji_dlog_m", "dlog_m"]:
+        target_is_log = True
+        resolved_profile = "dji_dlog_m_rec709"
     elif "dlog" in p_lower or "d-log" in p_lower or p_lower in ["dji_dlog_dgamut", "dji_dlog", "dji"]:
         target_is_log = True
         resolved_profile = "dji_dlog_dgamut"
@@ -90,7 +93,7 @@ def build_grade_plan(
         target_is_log = True
         resolved_profile = "generic_log_experimental"
     else:
-        raise ValueError(f"Unsupported camera profile '{color_profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, generic_log_experimental.")
+        raise ValueError(f"Unsupported camera profile '{color_profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, dji_dlog_m_rec709, generic_log_experimental.")
         
     plan.input_transform = InputTransformParams(
         is_log=target_is_log,
@@ -209,32 +212,32 @@ def build_grade_plan(
         # Check source condition from target metrics
         is_target_dark = (target.p50_luminance < 20.0 or target.avg_luminance < 35.0)
         
-        if exp_class == "low_key_underexposed" or light_class == "low_key_underexposed":
-            # For low_key_underexposed: bound trim_exposure_ev to [-0.6, 0.0] and trim_contrast to [0.90, 1.10]
-            eff_min = max(min_ev, -0.6)
-            eff_max = min(max_ev, 0.0)
-            trim_ev = float(np.clip(0.0, eff_min, eff_max))
-            trim_cont = float(np.clip(1.0, 0.90, 1.10))
-            trim_lift = 0.5
-        elif exp_class == "low_key_night" or light_class in ["low_key_night", "night"]:
-            # For low_key_night: preserve natural darkness (trim_exposure_ev in [-0.8, -0.2], trim_contrast in [0.85, 1.05])
-            eff_min = max(min_ev, -0.8)
-            eff_max = min(max_ev, -0.2)
-            trim_ev = float(np.clip(-0.4, eff_min, eff_max))
-            trim_cont = float(np.clip(0.95, 0.85, 1.05))
-        elif exp_class == "intentional_silhouette" or light_class == "intentional_silhouette":
+        if exp_class == "intentional_silhouette" or light_class == "intentional_silhouette":
             # For intentional_silhouette: do not force exposure upward; set trim_exposure_ev in [-1.5, -0.3] and trim_contrast in [1.10, 1.40]
             eff_min = max(min_ev, -1.5)
             eff_max = min(max_ev, -0.3)
             trim_ev = float(np.clip(-0.8, eff_min, eff_max))
             trim_cont = float(np.clip(1.20, 1.10, 1.40))
-        elif exp_class in ["underexposed"] and is_target_dark:
-            # Allow modest lift when doing so restores readable midtones without destroying intended night mood
-            trim_ev = float(np.clip(0.35, min_ev, max_ev))
-            trim_lift = 1.0
         elif exp_class in ["overexposed", "blown_out"]:
             # Reduce washed out scene within bounds
             trim_ev = float(np.clip(-0.35, min_ev, max_ev))
+        elif exp_class == "low_key_underexposed" or (exp_class == "underexposed" and is_target_dark):
+            # For low-key underexposed scenes: allow bounded positive lift for readability
+            eff_min = max(min_ev, 0.0)
+            eff_max = min(max_ev, 0.5)
+            trim_ev = float(np.clip(0.25, eff_min, eff_max))
+            trim_cont = float(np.clip(0.95, 0.85, 1.05))
+            trim_lift = 0.75
+        elif exp_class in ["underexposed"]:
+            # Allow modest lift when doing so restores readable midtones without destroying intended night mood
+            trim_ev = float(np.clip(0.35, min_ev, max_ev))
+            trim_lift = 1.0
+        elif exp_class == "low_key_night" or light_class in ["low_key_night", "night"]:
+            # For balanced low-key night: default to 0.0 EV exposure trim, preserving natural darkness
+            # without forced negative darkening
+            trim_ev = float(np.clip(0.0, min_ev, max_ev))
+            trim_cont = float(np.clip(1.0, 0.90, 1.05))
+            trim_lift = 0.2
         else:
             # Balanced / intentionally low-key: NO automatic exposure reduction
             trim_ev = float(np.clip(0.0, min_ev, max_ev))
@@ -300,6 +303,8 @@ def assess_input_profile(
         metadata_recommendation = "sony_slog3_sgamut3cine"
     elif "apple" in transfer or "apple" in path_lower or ("arib-std-b67" in transfer and "bt2020" in primaries):
         metadata_recommendation = "apple_log_rec2020"
+    elif "dlog_m" in transfer or "dlog-m" in transfer or "dlog_m" in path_lower or "dlog-m" in path_lower or "dji_dlog_m" in path_lower:
+        metadata_recommendation = "dji_dlog_m_rec709"
     elif "dlog" in transfer or "d-log" in transfer or "dlog" in path_lower or "d-log" in path_lower or "d-gamut" in primaries or "dgamut" in primaries or "dji" in path_lower:
         metadata_recommendation = "dji_dlog_dgamut"
     elif "bt709" in transfer or "iec61966" in transfer or "smpte170m" in transfer or "bt709" in primaries:
@@ -344,7 +349,9 @@ def assess_input_profile(
         req = "rec709"
     elif req in ["slog3", "sony_slog3"]:
         req = "sony_slog3_sgamut3cine"
-    elif req in ["dlog", "dji_dlog", "dji", "dji-dlog"]:
+    elif req in ["dlog_m", "dlog-m", "dji_dlog_m", "dji-dlog-m", "dji_dlog_m_rec709"]:
+        req = "dji_dlog_m_rec709"
+    elif req in ["dlog", "dji_dlog", "dji", "dji-dlog", "dji_dlog_dgamut"]:
         req = "dji_dlog_dgamut"
 
     warning_msg = None
@@ -354,15 +361,18 @@ def assess_input_profile(
     resolution_source = "unresolved"
 
     # Explicit known profile
-    if req in ["rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "generic_log_experimental"]:
+    if req in ["rec709", "sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "dji_dlog_m_rec709", "generic_log_experimental"]:
         resolved_profile = req
         resolution_source = "user_explicit"
         recommended_profile = metadata_recommendation or req
         
         # Check contradictions
-        if req == "rec709" and metadata_recommendation in ["sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut"]:
+        if req == "rec709" and metadata_recommendation in ["sony_slog3_sgamut3cine", "apple_log_rec2020", "dji_dlog_dgamut", "dji_dlog_m_rec709"]:
             requires_confirmation = True
             warning_msg = f"Metadata indicates {metadata_recommendation}, but Rec.709 was selected. Confirm profile selection."
+        elif req == "dji_dlog_dgamut" and metadata_recommendation == "dji_dlog_m_rec709":
+            requires_confirmation = True
+            warning_msg = "Metadata indicates DJI D-Log M, but DJI D-Log / D-Gamut was selected. Confirm profile selection."
         elif req == "rec709" and signal_class_hint == "log_like":
             requires_confirmation = True
             warning_msg = f"Possible Log/flat footage detected in {shot_id}; select the camera profile if known."

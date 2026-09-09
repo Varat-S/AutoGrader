@@ -5,6 +5,7 @@ from app.models.analysis import (
     FrameMetrics,
     ShotMetrics,
     NormalizationValidationResult,
+    NormalizationDiagnostics,
     LookContinuityScore,
     SceneHealthScore,
     SceneIntent
@@ -144,7 +145,11 @@ def aggregate_shot_metrics(
         dominant_cast=cast
     )
 
-def is_log_profile(metrics: ShotMetrics) -> bool:
+def is_log_profile(metrics_or_profile: Union[ShotMetrics, str]) -> bool:
+    if isinstance(metrics_or_profile, str):
+        p = metrics_or_profile.lower().strip()
+        return p not in ["rec709", "rec.709", "bt709", "srgb", "display", "auto"]
+    metrics = metrics_or_profile
     p5_val = metrics.p5_luminance if metrics.p5_luminance > 0 else float(np.mean([f.p5_luminance for f in metrics.sampled_frames])) if metrics.sampled_frames else 0.0
     # Must have elevated black floor (>38) AND low baseline chroma (<12) AND flat tonal spread
     iqr = metrics.p75_luminance - metrics.p25_luminance
@@ -244,6 +249,65 @@ def linear_to_dji_dlog(x: np.ndarray) -> np.ndarray:
         np.log10(np.maximum(1e-9, x * 0.9892 + 0.0108)) * 0.256663 + 0.584555
     )
 
+# 4. DJI D-Log M / Rec.709 (Mavic 3 / Air 2S / Air 3 / Mini 4 Pro / Pocket 3 / Action 4/5)
+def dji_dlog_m_to_linear(y: np.ndarray) -> np.ndarray:
+    """Decodes normalized DJI D-Log M [0, 1] to scene-linear light.
+    DJI D-Log M curve specification:
+    Black floor at 0.10 (102/1023), 18% middle gray at ~0.46.
+    For y <= 0.10: (y - 0.10) / 4.5
+    For y >  0.10: ((y - 0.10) / 0.90) ** 1.90
+    """
+    return np.where(
+        y <= 0.10,
+        (y - 0.10) / 4.5,
+        np.maximum(0.0, (y - 0.10) / 0.90) ** 1.90
+    )
+
+def linear_to_dji_dlog_m(x: np.ndarray) -> np.ndarray:
+    """Encodes scene-linear light to normalized DJI D-Log M [0, 1].
+    For x <= 0: 0.10 + 4.5 * x
+    For x >  0: 0.10 + 0.90 * (x ** (1.0 / 1.90))
+    """
+    return np.where(
+        x <= 0.0,
+        0.10 + 4.5 * x,
+        0.10 + 0.90 * (np.maximum(0.0, x) ** (1.0 / 1.90))
+    )
+
+REC709_LUMA_COEFFS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+def compress_out_of_gamut_rgb(rgb_linear: np.ndarray, eps: float = 1e-7) -> Tuple[np.ndarray, float, float]:
+    """Compresses negative (out-of-gamut) channels toward neutral gray while strictly preserving luminance Y.
+    
+    Returns:
+        (compressed_rgb, negative_excursion_pct, mean_compression_amount)
+    """
+    y_lin = 0.2126 * rgb_linear[..., 0] + 0.7152 * rgb_linear[..., 1] + 0.0722 * rgb_linear[..., 2]
+    min_c = np.min(rgb_linear, axis=-1)
+    neg_mask = min_c < 0.0
+    neg_pct = float(np.mean(neg_mask) * 100.0)
+    
+    if not np.any(neg_mask):
+        return rgb_linear, 0.0, 0.0
+        
+    compressed = rgb_linear.copy()
+    valid_y_mask = neg_mask & (y_lin > eps)
+    if np.any(valid_y_mask):
+        y_val = y_lin[valid_y_mask]
+        min_val = min_c[valid_y_mask]
+        s = np.clip(y_val / (y_val - min_val + eps), 0.0, 1.0)[..., np.newaxis]
+        y_expanded = y_val[..., np.newaxis]
+        compressed[valid_y_mask] = y_expanded + s * (compressed[valid_y_mask] - y_expanded)
+        mean_comp = float(np.mean(1.0 - s))
+    else:
+        mean_comp = 0.0
+        
+    nonpos_mask = neg_mask & (y_lin <= eps)
+    if np.any(nonpos_mask):
+        compressed[nonpos_mask] = np.maximum(0.0, compressed[nonpos_mask])
+        
+    return compressed, neg_pct, mean_comp
+
 def scene_linear_to_rec709_display(linear_rgb: np.ndarray) -> np.ndarray:
     """Standard ITU-R BT.709 display tone curve with highlight roll-off."""
     threshold = 0.85
@@ -276,50 +340,201 @@ def apply_log_to_rec709_cst(bgr_float: np.ndarray, black_floor: float = 0.11, wh
     
     return np.clip(rec709_bgr, 0.0, 1.0)
 
+def apply_input_camera_profile_with_diagnostics(
+    bgr_float: np.ndarray,
+    profile: str = "rec709",
+    black_floor: float = 0.11,
+    white_ceil: float = 0.95,
+    probed_info: Optional[Dict[str, Any]] = None
+) -> Tuple[np.ndarray, NormalizationDiagnostics]:
+    p = profile.lower().strip()
+    if p == "auto_ask":
+        raise ValueError("auto_ask is a pending decision state and cannot be applied as a camera profile transform.")
+
+    src_range = str(probed_info.get("color_range", "tv")) if probed_info else "tv"
+    src_transfer = str(probed_info.get("color_transfer", "unknown")) if probed_info else "unknown"
+
+    # Pre-transform source statistics
+    src_rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+    src_lum = 0.2126 * src_rgb[..., 0] + 0.7152 * src_rgb[..., 1] + 0.0722 * src_rgb[..., 2]
+    src_p5 = float(np.percentile(src_lum, 5) * 255.0)
+    src_p25 = float(np.percentile(src_lum, 25) * 255.0)
+    src_p50 = float(np.percentile(src_lum, 50) * 255.0)
+    src_p75 = float(np.percentile(src_lum, 75) * 255.0)
+    src_p95 = float(np.percentile(src_lum, 95) * 255.0)
+    src_iqr = src_p75 - src_p25
+
+    expected_black = 0.0
+    neg_pct = 0.0
+    over_one_pct = 0.0
+
+    if p in ["rec709", "bt709", "srgb", "display"]:
+        expected_black = 0.0
+        resolved_p = "rec709"
+        norm_bgr = np.clip(bgr_float, 0.0, 1.0)
+        display_rgb = cv2.cvtColor(norm_bgr, cv2.COLOR_BGR2RGB)
+        pos_collapsed_pct = 0.0
+        nonpos_pct = float(np.mean(src_lum <= 0.001) * 100.0)
+
+    elif "dlog_m" in p or "dlog-m" in p or "dji_dlog_m" in p:
+        expected_black = 0.10
+        resolved_p = "dji_dlog_m_rec709"
+        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+        linear_rgb = dji_dlog_m_to_linear(rgb)
+        lin_lum = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
+        nonpos_pct = float(np.mean(lin_lum <= 0.001) * 100.0)
+        pos_mask = lin_lum > 0.015
+
+        compressed, neg_pct, _ = compress_out_of_gamut_rgb(linear_rgb)
+        over_one_pct = float(np.mean(np.max(compressed, axis=-1) > 1.0) * 100.0)
+        display_rgb = scene_linear_to_rec709_display(compressed)
+        
+        # Saturation normalization (1.30x)
+        hsv = cv2.cvtColor(np.clip(display_rgb, 0.0, 1.0).astype(np.float32), cv2.COLOR_BGR2HSV)
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.30, 0.0, 1.0)
+        norm_bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        display_rgb = cv2.cvtColor(norm_bgr, cv2.COLOR_BGR2RGB)
+
+        disp_lum = 0.2126 * display_rgb[..., 0] + 0.7152 * display_rgb[..., 1] + 0.0722 * display_rgb[..., 2]
+        if np.any(pos_mask):
+            pos_collapsed_pct = float(np.mean((disp_lum < (2.0 / 255.0)) & pos_mask) * 100.0)
+        else:
+            pos_collapsed_pct = 0.0
+
+    elif "dlog" in p or "d_log" in p or "d-log" in p:
+        expected_black = 0.0929
+        resolved_p = "dji_dlog_dgamut"
+        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+        linear_rgb = dji_dlog_to_linear(rgb)
+        lin_lum = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
+        nonpos_pct = float(np.mean(lin_lum <= 0.001) * 100.0)
+        pos_mask = lin_lum > 0.015
+
+        h, w, c_dim = linear_rgb.shape
+        reshaped = linear_rgb.reshape(-1, 3)
+        converted = np.dot(reshaped, MAT_DGAMUT_TO_BT709.T).reshape(h, w, c_dim)
+        compressed, neg_pct, _ = compress_out_of_gamut_rgb(converted)
+        over_one_pct = float(np.mean(np.max(compressed, axis=-1) > 1.0) * 100.0)
+        display_rgb = scene_linear_to_rec709_display(compressed)
+        norm_bgr = cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
+
+        disp_lum = 0.2126 * display_rgb[..., 0] + 0.7152 * display_rgb[..., 1] + 0.0722 * display_rgb[..., 2]
+        if np.any(pos_mask):
+            pos_collapsed_pct = float(np.mean((disp_lum < (2.0 / 255.0)) & pos_mask) * 100.0)
+        else:
+            pos_collapsed_pct = 0.0
+
+    elif "slog3" in p or "s_log3" in p:
+        expected_black = 0.09286
+        resolved_p = "sony_slog3_sgamut3cine"
+        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+        linear_rgb = sony_slog3_to_linear(rgb)
+        lin_lum = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
+        nonpos_pct = float(np.mean(lin_lum <= 0.001) * 100.0)
+        pos_mask = lin_lum > 0.015
+
+        h, w, c_dim = linear_rgb.shape
+        reshaped = linear_rgb.reshape(-1, 3)
+        converted = np.dot(reshaped, MAT_SGAMUT3CINE_TO_BT709.T).reshape(h, w, c_dim)
+        compressed, neg_pct, _ = compress_out_of_gamut_rgb(converted)
+        over_one_pct = float(np.mean(np.max(compressed, axis=-1) > 1.0) * 100.0)
+        display_rgb = scene_linear_to_rec709_display(compressed)
+        norm_bgr = cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
+
+        disp_lum = 0.2126 * display_rgb[..., 0] + 0.7152 * display_rgb[..., 1] + 0.0722 * display_rgb[..., 2]
+        if np.any(pos_mask):
+            pos_collapsed_pct = float(np.mean((disp_lum < (2.0 / 255.0)) & pos_mask) * 100.0)
+        else:
+            pos_collapsed_pct = 0.0
+
+    elif "apple_log" in p or "apple" in p:
+        expected_black = 0.15048
+        resolved_p = "apple_log_rec2020"
+        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
+        linear_rgb = apple_log_to_linear(rgb)
+        lin_lum = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
+        nonpos_pct = float(np.mean(lin_lum <= 0.001) * 100.0)
+        pos_mask = lin_lum > 0.015
+
+        h, w, c_dim = linear_rgb.shape
+        reshaped = linear_rgb.reshape(-1, 3)
+        converted = np.dot(reshaped, MAT_BT2020_TO_BT709.T).reshape(h, w, c_dim)
+        compressed, neg_pct, _ = compress_out_of_gamut_rgb(converted)
+        over_one_pct = float(np.mean(np.max(compressed, axis=-1) > 1.0) * 100.0)
+        display_rgb = scene_linear_to_rec709_display(compressed)
+        norm_bgr = cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
+
+        disp_lum = 0.2126 * display_rgb[..., 0] + 0.7152 * display_rgb[..., 1] + 0.0722 * display_rgb[..., 2]
+        if np.any(pos_mask):
+            pos_collapsed_pct = float(np.mean((disp_lum < (2.0 / 255.0)) & pos_mask) * 100.0)
+        else:
+            pos_collapsed_pct = 0.0
+
+    elif p in ["generic_log_experimental", "generic_log", "generic log", "flat", "log"]:
+        expected_black = black_floor
+        resolved_p = "generic_log_experimental"
+        norm_bgr = apply_log_to_rec709_cst(bgr_float, black_floor=black_floor, white_ceil=white_ceil)
+        display_rgb = cv2.cvtColor(norm_bgr, cv2.COLOR_BGR2RGB)
+        pos_collapsed_pct = 0.0
+        nonpos_pct = float(np.mean(src_lum <= black_floor) * 100.0)
+
+    else:
+        raise ValueError(f"Unknown camera input profile '{profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, dji_dlog_m_rec709, generic_log_experimental.")
+
+    # Post-normalization statistics
+    post_lum = 0.2126 * display_rgb[..., 0] + 0.7152 * display_rgb[..., 1] + 0.0722 * display_rgb[..., 2]
+    norm_p5 = float(np.percentile(post_lum, 5) * 255.0)
+    norm_p25 = float(np.percentile(post_lum, 25) * 255.0)
+    norm_p50 = float(np.percentile(post_lum, 50) * 255.0)
+    norm_p75 = float(np.percentile(post_lum, 75) * 255.0)
+    norm_p95 = float(np.percentile(post_lum, 95) * 255.0)
+    norm_iqr = norm_p75 - norm_p25
+
+    post_black_pct = float(np.mean(post_lum < (2.0 / 255.0)) * 100.0)
+    post_highlight_pct = float(np.mean(post_lum > (253.0 / 255.0)) * 100.0)
+    finite_passed = bool(np.all(np.isfinite(norm_bgr)))
+
+    diagnostics = NormalizationDiagnostics(
+        requested_profile=profile,
+        resolved_profile=resolved_p,
+        source_color_range=src_range,
+        source_transfer_metadata=src_transfer,
+        expected_log_black_code=round(expected_black, 4),
+        decoded_nonpositive_luminance_pct=round(nonpos_pct, 2),
+        positive_luminance_collapsed_to_black_pct=round(pos_collapsed_pct, 2),
+        negative_rgb_excursion_pct=round(neg_pct, 2),
+        over_one_rgb_excursion_pct=round(over_one_pct, 2),
+        post_black_occupancy_pct=round(post_black_pct, 2),
+        post_highlight_occupancy_pct=round(post_highlight_pct, 2),
+        source_p5=round(src_p5, 1),
+        source_p25=round(src_p25, 1),
+        source_p50=round(src_p50, 1),
+        source_p75=round(src_p75, 1),
+        source_p95=round(src_p95, 1),
+        normalized_p5=round(norm_p5, 1),
+        normalized_p25=round(norm_p25, 1),
+        normalized_p50=round(norm_p50, 1),
+        normalized_p75=round(norm_p75, 1),
+        normalized_p95=round(norm_p95, 1),
+        source_iqr=round(src_iqr, 1),
+        normalized_iqr=round(norm_iqr, 1),
+        finite_values_passed=finite_passed
+    )
+    return np.clip(norm_bgr, 0.0, 1.0), diagnostics
+
 def apply_input_camera_profile(
     bgr_float: np.ndarray,
     profile: str = "rec709",
     black_floor: float = 0.11,
     white_ceil: float = 0.95
 ) -> np.ndarray:
-    p = profile.lower().strip()
-    if p == "auto_ask":
-        raise ValueError("auto_ask is a pending decision state and cannot be applied as a camera profile transform.")
-        
-    if p in ["rec709", "bt709", "srgb", "display"]:
-        return np.clip(bgr_float, 0.0, 1.0)
-        
-    if "slog3" in p or "s_log3" in p:
-        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
-        linear_rgb = sony_slog3_to_linear(rgb)
-        h, w, c_dim = linear_rgb.shape
-        reshaped = linear_rgb.reshape(-1, 3)
-        converted = np.dot(reshaped, MAT_SGAMUT3CINE_TO_BT709.T).reshape(h, w, c_dim)
-        display_rgb = scene_linear_to_rec709_display(converted)
-        return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
-        
-    if "apple_log" in p or "apple" in p:
-        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
-        linear_rgb = apple_log_to_linear(rgb)
-        h, w, c_dim = linear_rgb.shape
-        reshaped = linear_rgb.reshape(-1, 3)
-        converted = np.dot(reshaped, MAT_BT2020_TO_BT709.T).reshape(h, w, c_dim)
-        display_rgb = scene_linear_to_rec709_display(converted)
-        return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
-
-    if "dlog" in p or "d_log" in p or "d-log" in p:
-        rgb = cv2.cvtColor(bgr_float, cv2.COLOR_BGR2RGB)
-        linear_rgb = dji_dlog_to_linear(rgb)
-        h, w, c_dim = linear_rgb.shape
-        reshaped = linear_rgb.reshape(-1, 3)
-        converted = np.dot(reshaped, MAT_DGAMUT_TO_BT709.T).reshape(h, w, c_dim)
-        display_rgb = scene_linear_to_rec709_display(converted)
-        return cv2.cvtColor(display_rgb.astype(np.float32), cv2.COLOR_RGB2BGR)
-        
-    if p in ["generic_log_experimental", "generic_log", "generic log", "flat", "log"]:
-        return apply_log_to_rec709_cst(bgr_float, black_floor=black_floor, white_ceil=white_ceil)
-
-    raise ValueError(f"Unknown camera input profile '{profile}'. Supported profiles: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, generic_log_experimental.")
+    norm_bgr, _ = apply_input_camera_profile_with_diagnostics(
+        bgr_float=bgr_float,
+        profile=profile,
+        black_floor=black_floor,
+        white_ceil=white_ceil
+    )
+    return norm_bgr
 
 def calculate_deterministic_match_params(
     reference: ShotMetrics,
@@ -908,9 +1123,36 @@ def assess_normalization_health(
     shot_id: str,
     source_metrics: ShotMetrics,
     normalized_frames: List[np.ndarray],
-    profile: str = "rec709"
+    profile: str = "rec709",
+    probed_info: Optional[Dict[str, Any]] = None,
+    diagnostics: Optional[NormalizationDiagnostics] = None,
+    scene_intent: Optional[SceneIntent] = None
 ) -> NormalizationValidationResult:
-    """Evaluates whether the input transform produced a plausible display-referred image."""
+    """Evaluates whether the input transform produced a plausible display-referred image
+    using profile-aware pre-clip diagnostics, distinguishing introduced clipping from legitimate
+    dark/silhouette scenes and expected Log-to-display black mapping.
+    """
+    if not normalized_frames:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason="No normalized frames available for verification.",
+            metrics_summary={}
+        )
+
+    # 1. Finite values check
+    all_finite = all(bool(np.all(np.isfinite(f))) for f in normalized_frames)
+    if not all_finite:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason="Non-finite values (NaN or Inf) detected in normalized frames.",
+            metrics_summary={"finite_values_passed": False},
+            diagnostics=diagnostics
+        )
+
     norm_lums = []
     shadow_clips = []
     highlight_clips = []
@@ -928,47 +1170,184 @@ def assess_normalization_health(
     all_grays = np.concatenate([cv2.cvtColor(f if f.dtype == np.uint8 else (np.clip(f, 0.0, 1.0)*255.0).astype(np.uint8), cv2.COLOR_BGR2GRAY).ravel() for f in normalized_frames])
     p5 = float(np.percentile(all_grays, 5))
     p25 = float(np.percentile(all_grays, 25))
+    p50 = float(np.percentile(all_grays, 50))
     p75 = float(np.percentile(all_grays, 75))
     p95 = float(np.percentile(all_grays, 95))
     iqr = p75 - p25
+
+    # If diagnostics is not provided, derive pre-clip diagnostics from first frame
+    if diagnostics is None and normalized_frames:
+        first_f = normalized_frames[0]
+        first_float = first_f if first_f.dtype != np.uint8 else (first_f.astype(np.float32) / 255.0)
+        _, diagnostics = apply_input_camera_profile_with_diagnostics(
+            bgr_float=first_float,
+            profile=profile,
+            probed_info=probed_info
+        )
     
     metrics_summary = {
         "avg_luminance": round(avg_lum, 1),
         "p5": round(p5, 1),
+        "p25": round(p25, 1),
+        "p50": round(p50, 1),
+        "p75": round(p75, 1),
         "p95": round(p95, 1),
         "iqr": round(iqr, 1),
         "shadow_clip_pct": round(avg_sh_clip, 2),
-        "highlight_clip_pct": round(avg_hl_clip, 2)
+        "highlight_clip_pct": round(avg_hl_clip, 2),
+        "positive_luminance_collapsed_to_black_pct": round(diagnostics.positive_luminance_collapsed_to_black_pct, 2) if diagnostics else 0.0,
+        "negative_rgb_excursion_pct": round(diagnostics.negative_rgb_excursion_pct, 2) if diagnostics else 0.0
     }
-    
-    if avg_sh_clip > 8.0 or avg_hl_clip > 8.0:
+
+    src_p5 = source_metrics.p5_luminance
+    src_iqr = source_metrics.p75_luminance - source_metrics.p25_luminance
+    src_transfer = str(probed_info.get("color_transfer", "")).lower() if probed_info else ""
+
+    # Check: Is scene legitimate low-key night or intentional silhouette?
+    is_low_key = False
+    if scene_intent:
+        light_c = scene_intent.lighting_class.lower()
+        exp_c = scene_intent.exposure_class.lower()
+        if light_c in ["low_key_night", "night", "dark_interior", "intentional_silhouette"] or exp_c in ["low_key", "low_key_underexposed", "intentional_silhouette"]:
+            is_low_key = True
+    if source_metrics.p50_luminance < 35.0 or source_metrics.avg_luminance < 40.0:
+        is_low_key = True
+
+    # 2. Check for double normalization on already display-ready footage
+    is_already_rec709 = (
+        (src_transfer in ["bt709", "iec61966", "srgb", "smpte170m"] or (src_p5 < 15.0 and src_iqr > 40.0 and source_metrics.avg_chroma > 15.0))
+        and profile not in ["rec709", "auto_ask"]
+    )
+    if is_already_rec709 and (avg_sh_clip > 12.0 or (diagnostics and diagnostics.positive_luminance_collapsed_to_black_pct > 3.0)):
         return NormalizationValidationResult(
             shot_id=shot_id,
             state="NORMALIZATION_FAILED",
             passed=False,
-            reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
-            metrics_summary=metrics_summary
+            reason=f"Detected likely double normalization: footage appears already display-ready Rec.709. Applying Log profile '{profile}' crushed {avg_sh_clip:.1f}% shadow details.",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
         )
 
-    # If source had flat log-like characteristics:
-    src_iqr = source_metrics.p75_luminance - source_metrics.p25_luminance
+    # 3. Check for destructive positive-luminance shadow collapse
+    introduced_clip = diagnostics.positive_luminance_collapsed_to_black_pct if diagnostics else 0.0
+    if introduced_clip > 5.0 and not is_low_key:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason=f"Destructive shadow collapse: transform crushed {introduced_clip:.1f}% of positive scene detail to display black.",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
+        )
+
+    # 4. Check for catastrophic midtone collapse
+    if iqr < 8.0 and src_iqr > 20.0:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason=f"Catastrophic midtone contrast collapse (IQR dropped from {src_iqr:.1f} to {iqr:.1f}).",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
+        )
+
+    # 5. Check if unexpanded flat Log footage under Rec.709 triggers confirmation
     if source_metrics.avg_chroma < 12.0 and (src_iqr < 55.0 or source_metrics.p5_luminance > 38.0) and p5 > 25.0:
-        # Clip was flat initially. If it didn't materially expand or p5 is still elevated under Rec.709:
         if iqr < 35.0 or (p5 > 35.0 and profile in ["rec709", "auto_ask"]):
             return NormalizationValidationResult(
                 shot_id=shot_id,
                 state="PROFILE_CONFIRMATION_REQUIRED",
                 passed=False,
                 reason=f"Footage exhibits elevated black floor (p5={p5:.1f}) and flat contrast (IQR={iqr:.1f}). Verification of camera Log profile required.",
-                metrics_summary=metrics_summary
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
             )
-        
+
+    # 6. Check profile mismatch (e.g. D-Log M vs D-Log)
+    if probed_info:
+        tr = str(probed_info.get("color_transfer", "")).lower()
+        path_str = str(probed_info.get("path", "")).lower()
+        if ("dlog_m" in tr or "dlog-m" in tr or "dlog_m" in path_str or "dlog-m" in path_str) and profile == "dji_dlog_dgamut":
+            return NormalizationValidationResult(
+                shot_id=shot_id,
+                state="PROFILE_CONFIRMATION_REQUIRED",
+                passed=False,
+                reason="Clip metadata/filename indicates DJI D-Log M, but full cinema D-Log / D-Gamut was selected. Confirm profile selection.",
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
+            )
+
+    # 7. Check 100% black clipped frame (unit test safety)
+    if avg_sh_clip >= 99.0:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_FAILED",
+            passed=False,
+            reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
+        )
+
+    # 8. High black occupancy: distinguish legitimate dark/night scene from daylight overclipping
+    if avg_sh_clip > 8.0:
+        if is_low_key or introduced_clip < 2.5:
+            return NormalizationValidationResult(
+                shot_id=shot_id,
+                state="NORMALIZATION_WARNING",
+                passed=True,
+                reason=f"High display black occupancy ({avg_sh_clip:.1f}%) is consistent with legitimate low-key/night scene (introduced clipping {introduced_clip:.1f}%). Verified with warning.",
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
+            )
+        else:
+            return NormalizationValidationResult(
+                shot_id=shot_id,
+                state="NORMALIZATION_FAILED",
+                passed=False,
+                reason=f"Excessive clipping after input transform (Shadow: {avg_sh_clip:.1f}%, Highlight: {avg_hl_clip:.1f}%).",
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
+            )
+
+    # 9. Highlight clipping check
+    if avg_hl_clip > 8.0:
+        if diagnostics and diagnostics.over_one_rgb_excursion_pct > 8.0 and not is_low_key:
+            return NormalizationValidationResult(
+                shot_id=shot_id,
+                state="NORMALIZATION_FAILED",
+                passed=False,
+                reason=f"Excessive highlight clipping ({avg_hl_clip:.1f}%) after input transform.",
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
+            )
+        else:
+            return NormalizationValidationResult(
+                shot_id=shot_id,
+                state="NORMALIZATION_WARNING",
+                passed=True,
+                reason=f"Elevated highlight occupancy ({avg_hl_clip:.1f}%) consistent with bright specular/sky sources. Verified with warning.",
+                metrics_summary=metrics_summary,
+                diagnostics=diagnostics
+            )
+
+    # 10. Gamut compression advisory check
+    if diagnostics and diagnostics.negative_rgb_excursion_pct > 5.0:
+        return NormalizationValidationResult(
+            shot_id=shot_id,
+            state="NORMALIZATION_WARNING",
+            passed=True,
+            reason=f"Luminance-preserving gamut compression applied to {diagnostics.negative_rgb_excursion_pct:.1f}% of out-of-gamut pixels. Verified with warning.",
+            metrics_summary=metrics_summary,
+            diagnostics=diagnostics
+        )
+
     return NormalizationValidationResult(
         shot_id=shot_id,
         state="NORMALIZATION_VERIFIED",
         passed=True,
         reason="Normalized display tone distribution healthy and within plausible Rec.709 bounds.",
-        metrics_summary=metrics_summary
+        metrics_summary=metrics_summary,
+        diagnostics=diagnostics
     )
 
 def compute_consistency_score(

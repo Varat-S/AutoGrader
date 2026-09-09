@@ -200,21 +200,30 @@ def research_cinematography_principles(
                     
             # Strict grounding criteria: Do NOT substitute title as evidence, must be valid http(s) URL
             if excerpt and url and (url.startswith("http://") or url.startswith("https://")):
-                principle_idx = min(len(citations), len(brief_data["default_principles"]) - 1)
+                sentences = [s.strip() for s in excerpt.split(". ") if len(s.strip()) > 15]
+                if sentences:
+                    extracted_princ = sentences[0]
+                    if not extracted_princ.endswith("."):
+                        extracted_princ += "."
+                else:
+                    extracted_princ = excerpt[:120].strip() + ("." if not excerpt[:120].strip().endswith(".") else "")
+
+                influence_text = f"Informed by cinematography evidence in '{title}' to guide tonal response and color balance."
                 citations.append(SearchCitation(
                     title=str(title).strip() or "Cinematography Reference",
                     url=str(url).strip(),
                     excerpt=str(excerpt)[:400],
-                    extracted_principle=brief_data["default_principles"][principle_idx],
-                    influence=brief_data["default_influence"]
+                    extracted_principle=extracted_princ,
+                    influence=influence_text
                 ))
                 
         is_grounded = (len(citations) > 0)
+        synthesized_principles = [c.extracted_principle for c in citations if c.extracted_principle] if is_grounded else []
         return CinematographyResearchResult(
             query=queries[0],
             objective=objective,
             sources=citations,
-            synthesized_principles=brief_data["default_principles"] if is_grounded else [],
+            synthesized_principles=synthesized_principles,
             is_grounded=is_grounded
         )
     except Exception as e:

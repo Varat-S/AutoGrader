@@ -117,3 +117,82 @@ def test_shared_look_lut_equivalence_with_grade_plan(tmp_path):
                 max_diff = max(max_diff, diff_r, diff_g, diff_b)
 
     assert max_diff < 1e-4, f"LUT output diverged from GradePlan by {max_diff}"
+
+def test_shared_look_lut_includes_temperature_and_tint(tmp_path):
+    import numpy as np
+    from app.models.analysis import CreativeSpecification
+    from app.models.grade import GradePlan, CreativeLookParams, TechnicalBalanceParams
+    from app.media.lut import generate_shared_creative_look_lut
+    from app.media.color import apply_color_grade_to_frame
+
+    spec = CreativeSpecification(
+        look_title="Warm Golden Amber",
+        target_aesthetic="Warm aesthetic",
+        contrast_intent=1.10,
+        saturation_intent=1.05,
+        highlight_bias="warm amber",
+        shadow_bias="neutral",
+        temperature_shift=12.0,
+        tint_shift=-4.0
+    )
+
+    lut_file = str(tmp_path / "warm_shared_look.cube")
+    size = 9
+    generate_shared_creative_look_lut(spec, lut_file, size=size)
+
+    lut_values = []
+    with open(lut_file, "r", encoding="utf-8") as f:
+        for line in f:
+            l = line.strip()
+            if not l or l.startswith("#") or l.startswith("TITLE") or l.startswith("LUT_3D_SIZE") or l.startswith("DOMAIN"):
+                continue
+            parts = [float(x) for x in l.split()]
+            lut_values.append(parts)
+
+    plan = GradePlan(
+        shot_id="shared_creative_look",
+        is_same_scene=False,
+        technical_balance=TechnicalBalanceParams(
+            exposure_ev=0.0,
+            temperature=12.0,
+            tint=-4.0
+        ),
+        creative_look=CreativeLookParams(
+            look_title="Warm Golden Amber",
+            contrast=1.10,
+            pivot=0.45,
+            saturation=1.05,
+            shadow_rgb_offset=[0.0, 0.0, 0.0],
+            highlight_rgb_offset=[-0.04, 0.01, 0.05],
+            black_toe_lift=0.0,
+            black_mist_strength=0.0
+        )
+    )
+
+    r_space = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    g_space = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    b_space = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    lattice = np.zeros((size * size, size, 3), dtype=np.float32)
+    for b_idx in range(size):
+        for g_idx in range(size):
+            row_idx = b_idx * size + g_idx
+            for r_idx in range(size):
+                lattice[row_idx, r_idx] = [b_space[b_idx], g_space[g_idx], r_space[r_idx]]
+
+    graded_lattice = apply_color_grade_to_frame(lattice, plan, is_log=False)
+
+    max_diff = 0.0
+    val_idx = 0
+    for b_idx in range(size):
+        for g_idx in range(size):
+            row_idx = b_idx * size + g_idx
+            for r_idx in range(size):
+                b_direct, g_direct, r_direct = graded_lattice[row_idx, r_idx]
+                r_lut, g_lut, b_lut = lut_values[val_idx]
+                val_idx += 1
+                diff_r = abs(float(r_direct) - r_lut)
+                diff_g = abs(float(g_direct) - g_lut)
+                diff_b = abs(float(b_direct) - b_lut)
+                max_diff = max(max_diff, diff_r, diff_g, diff_b)
+
+    assert max_diff < 1e-4, f"LUT output diverged from GradePlan with temp/tint by {max_diff}"

@@ -181,9 +181,78 @@ def test_candidate_normalization_failure_halts_agent(tmp_path):
          patch("app.agent.synthesize_creative_specification", return_value=mock_spec), \
          patch("app.agent.assess_normalization_health", side_effect=mock_norm_side_effect):
 
-        with pytest.raises(RuntimeError, match="failed normalization gate"):
+        with pytest.raises(RuntimeError, match="failed normalization"):
             agent.process_sequence(
                 video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4", "tests/fixtures/sample_videos/underexposed.mp4"],
                 creative_prompt="test prompt",
                 color_profile="rec709"
             )
+
+def test_normalization_preflight_blocks_before_paid_llm_calls(tmp_path):
+    mock_inspection = SequenceInspectionResult(
+        shots=[
+            ShotSemanticAnalysis(
+                shot_id="shot_A",
+                scene_group_id="group_1",
+                relationship_to_reference="reference",
+                scene_description="Ref",
+                lighting_environment="daylight",
+                time_of_day="day",
+                exposure_assessment="balanced",
+                target_exposure_compensation_ev=0.0,
+                black_point_lift=2.0,
+                people_present=False,
+                dominant_color_cast="neutral",
+                reference_suitability_score=0.9
+            )
+        ],
+        recommended_reference_shot_id="shot_A",
+        scene_relationship="continuous_sequence"
+    )
+
+    agent = AutonomousColoristAgent(work_dir=str(tmp_path))
+
+    failed_norm = NormalizationValidationResult(
+        shot_id="shot_A",
+        state="NORMALIZATION_FAILED",
+        passed=False,
+        reason="Crushed shadows"
+    )
+
+    with patch("app.agent.inspect_all_shots_batched", return_value=mock_inspection), \
+         patch("app.agent.assess_normalization_health", return_value=failed_norm), \
+         patch("app.agent.research_cinematography_principles") as mock_research, \
+         patch("app.agent.synthesize_creative_specification") as mock_synthesize:
+
+        with pytest.raises(RuntimeError, match="failed normalization preflight"):
+            agent.process_sequence(
+                video_paths=["tests/fixtures/sample_videos/neutral_reference.mp4"],
+                creative_prompt="test prompt",
+                color_profile="rec709"
+            )
+
+        # Paid LLM functions must NOT have been called!
+        assert not mock_research.called, "Parallel research must not be called when preflight fails"
+        assert not mock_synthesize.called, "Gemini synthesis must not be called when preflight fails"
+
+def test_legitimate_low_key_scene_passes_as_normalization_warning():
+    from app.models.analysis import SceneIntent
+    from app.media.color import assess_normalization_health, aggregate_shot_metrics
+
+    # Create dark low-key frames where 15% of pixels are display black, but scene is legitimately night
+    dark_frame = np.full((100, 100, 3), 20, dtype=np.uint8)
+    dark_frame[:15, :] = 0  # 15% black pixels
+    metrics = aggregate_shot_metrics("dark_shot", "dark.mp4", [dark_frame], [0.0], 30.0, 100, 100, 1.0)
+
+    night_intent = SceneIntent(
+        scene_group_id="night_group",
+        lighting_class="low_key_night",
+        exposure_class="low_key",
+        allow_crushed_blacks=True
+    )
+
+    # In our staged gate, legitimate low-key scene should pass with NORMALIZATION_WARNING, not fail
+    res = assess_normalization_health("dark_shot", metrics, [dark_frame], profile="rec709", scene_intent=night_intent)
+    assert res.state == "NORMALIZATION_WARNING"
+    assert res.passed is True
+    assert "legitimate low-key" in res.reason.lower() or "warning" in res.reason.lower()

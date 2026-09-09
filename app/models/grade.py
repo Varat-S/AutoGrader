@@ -7,6 +7,7 @@ class InputProfile(str, Enum):
     SONY_SLOG3 = "sony_slog3_sgamut3cine"
     APPLE_LOG = "apple_log_rec2020"
     DJI_DLOG = "dji_dlog_dgamut"
+    DJI_DLOG_M = "dji_dlog_m_rec709"
     GENERIC_LOG = "generic_log_experimental"
     AUTO_ASK = "auto_ask"
 
@@ -25,6 +26,8 @@ class ShotProfileSelection(BaseModel):
                 return InputProfile.APPLE_LOG
             if v_clean in ["slog3", "sony_slog3"]:
                 return InputProfile.SONY_SLOG3
+            if v_clean in ["dji_dlog_m", "dlog_m", "dlog-m", "dji-dlog-m", "dji_dlog_m_rec709"]:
+                return InputProfile.DJI_DLOG_M
             if v_clean in ["dji_dlog", "dlog", "dji", "dji-dlog", "dji_dlog_dgamut"]:
                 return InputProfile.DJI_DLOG
             if v_clean in ["rec.709", "bt709", "display"]:
@@ -35,7 +38,7 @@ class ShotProfileSelection(BaseModel):
 
 class InputTransformParams(BaseModel):
     is_log: bool = Field(False, description="Whether input is flat / logarithmic profile requiring normalization")
-    profile: str = Field("rec709", description="Camera profile: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, generic_log_experimental")
+    profile: str = Field("rec709", description="Camera profile: rec709, sony_slog3_sgamut3cine, apple_log_rec2020, dji_dlog_dgamut, dji_dlog_m_rec709, generic_log_experimental")
     log_type: str = Field("generic_flat", description="Legacy alias for backwards compatibility")
     black_floor: float = Field(0.11, description="Normalized sensor black point")
     white_ceil: float = Field(0.95, description="Normalized sensor clipping ceiling")

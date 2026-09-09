@@ -22,12 +22,45 @@ class InputProfileAssessment(ShotProfileDecision):
     metadata_hint: str = "unknown"
     profile_mismatch_warning: bool = False
 
+class NormalizationDiagnostics(BaseModel):
+    requested_profile: str = "rec709"
+    resolved_profile: str = "rec709"
+    source_color_range: str = "tv"
+    source_transfer_metadata: str = "unknown"
+    expected_log_black_code: float = 0.0
+    decoded_nonpositive_luminance_pct: float = 0.0
+    positive_luminance_collapsed_to_black_pct: float = 0.0
+    negative_rgb_excursion_pct: float = 0.0
+    over_one_rgb_excursion_pct: float = 0.0
+    post_black_occupancy_pct: float = 0.0
+    post_highlight_occupancy_pct: float = 0.0
+    source_p5: float = 0.0
+    source_p25: float = 0.0
+    source_p50: float = 0.0
+    source_p75: float = 0.0
+    source_p95: float = 0.0
+    normalized_p5: float = 0.0
+    normalized_p25: float = 0.0
+    normalized_p50: float = 0.0
+    normalized_p75: float = 0.0
+    normalized_p95: float = 0.0
+    source_iqr: float = 0.0
+    normalized_iqr: float = 0.0
+    finite_values_passed: bool = True
+
 class NormalizationValidationResult(BaseModel):
     shot_id: str
-    state: Literal["NORMALIZATION_VERIFIED", "PROFILE_CONFIRMATION_REQUIRED", "NORMALIZATION_WARNING_OVERRIDDEN", "NORMALIZATION_FAILED"]
+    state: Literal[
+        "NORMALIZATION_VERIFIED",
+        "NORMALIZATION_WARNING",
+        "PROFILE_CONFIRMATION_REQUIRED",
+        "NORMALIZATION_WARNING_OVERRIDDEN",
+        "NORMALIZATION_FAILED"
+    ]
     passed: bool
     reason: str
     metrics_summary: Dict[str, Any] = Field(default_factory=dict)
+    diagnostics: Optional[NormalizationDiagnostics] = None
 
 class FrameMetrics(BaseModel):
     timestamp_sec: float
@@ -133,8 +166,6 @@ class GlobalLookIntent(BaseModel):
     black_mist_diffusion_strength: float = Field(0.0, ge=0.0, le=1.0, description="Black Mist diffusion emulation intensity")
 
 class SceneIntent(BaseModel):
-    model_config = {"extra": "allow"}
-
     scene_group_id: str = Field(..., description="Scene group identifier matching ShotSemanticAnalysis.scene_group_id")
     lighting_class: str = Field("daylight", description="daylight, golden_hour, low_key_night, practical_night, interior_tungsten, overcast, high_key, intentional_silhouette")
     exposure_class: str = Field("balanced", description="balanced, low_key, high_key, underexposed, overexposed, low_key_underexposed, intentional_silhouette, overexposed_night")

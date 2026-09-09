@@ -409,3 +409,90 @@ def test_intentional_silhouette_does_not_trigger_midtone_crush():
     assert "midtone_crush" not in health.hard_gate_failures
     assert health.midtone_readability == 100.0
 
+def test_night_scene_balanced_defaults_to_zero_ev():
+    from app.tools.calculate_grade import build_grade_plan
+    from app.models.analysis import ShotMetrics, FrameMetrics, SceneIntent
+
+    fm = FrameMetrics(
+        timestamp_sec=0.0, mean_luminance=25.0, median_luminance=22.0,
+        p5_luminance=5.0, p25_luminance=15.0, p50_luminance=22.0,
+        p75_luminance=35.0, p95_luminance=80.0, shadow_clip_pct=1.0,
+        highlight_clip_pct=0.0, lab_l_mean=20.0, lab_l_std=10.0,
+        lab_a_mean=0.0, lab_a_std=2.0, lab_b_mean=-5.0, lab_b_std=3.0,
+        mean_chroma=8.0, r_mean=20.0, g_mean=22.0, b_mean=28.0
+    )
+    metrics = ShotMetrics(
+        shot_id="night_shot", video_path="", duration_sec=1.0, width=640, height=360, fps=24.0,
+        sampled_frames=[fm], avg_luminance=25.0, p5_luminance=5.0, p50_luminance=22.0,
+        p95_luminance=80.0, avg_shadow_clip_pct=1.0, avg_highlight_clip_pct=0.0,
+        avg_lab_mean=[20.0, 0.0, -5.0], avg_lab_std=[10.0, 2.0, 3.0], avg_chroma=8.0
+    )
+
+    night_intent = SceneIntent(
+        scene_group_id="group_night",
+        lighting_class="low_key_night",
+        exposure_class="balanced",
+        source_relative_exposure_bounds=[-0.6, 0.6]
+    )
+
+    plan = build_grade_plan(
+        reference=metrics,
+        target=metrics,
+        scene_intent=night_intent,
+        is_reference_shot=False,
+        is_same_scene=False
+    )
+
+    # Balanced low-key night must default to 0.0 EV exposure trim, NOT automatic darkening
+    assert plan.scene_trim.trim_exposure_ev == 0.0, f"Expected 0.0 EV trim for balanced night scene, got {plan.scene_trim.trim_exposure_ev}"
+
+def test_low_key_underexposed_gets_bounded_positive_readability_lift():
+    from app.tools.calculate_grade import build_grade_plan
+    from app.models.analysis import ShotMetrics, FrameMetrics, SceneIntent
+
+    fm = FrameMetrics(
+        timestamp_sec=0.0, mean_luminance=15.0, median_luminance=12.0,
+        p5_luminance=2.0, p25_luminance=8.0, p50_luminance=12.0,
+        p75_luminance=20.0, p95_luminance=40.0, shadow_clip_pct=2.0,
+        highlight_clip_pct=0.0, lab_l_mean=12.0, lab_l_std=6.0,
+        lab_a_mean=0.0, lab_a_std=2.0, lab_b_mean=-5.0, lab_b_std=3.0,
+        mean_chroma=8.0, r_mean=12.0, g_mean=13.0, b_mean=18.0
+    )
+    metrics = ShotMetrics(
+        shot_id="underexposed_night", video_path="", duration_sec=1.0, width=640, height=360, fps=24.0,
+        sampled_frames=[fm], avg_luminance=15.0, p5_luminance=2.0, p50_luminance=12.0,
+        p95_luminance=40.0, avg_shadow_clip_pct=2.0, avg_highlight_clip_pct=0.0,
+        avg_lab_mean=[12.0, 0.0, -5.0], avg_lab_std=[6.0, 2.0, 3.0], avg_chroma=8.0
+    )
+
+    intent = SceneIntent(
+        scene_group_id="group_dark",
+        lighting_class="low_key_night",
+        exposure_class="low_key_underexposed",
+        source_relative_exposure_bounds=[-0.6, 0.6]
+    )
+
+    plan = build_grade_plan(
+        reference=metrics,
+        target=metrics,
+        scene_intent=intent,
+        is_reference_shot=False,
+        is_same_scene=False
+    )
+
+    # Low-key underexposed allows bounded positive lift for readability
+    assert plan.scene_trim.trim_exposure_ev > 0.0, f"Expected positive lift for readability, got {plan.scene_trim.trim_exposure_ev}"
+    assert plan.scene_trim.trim_exposure_ev <= 0.5
+
+def test_creative_spec_sdk_schema_compatibility():
+    # Verify that SceneIntent has no extra="allow" and produces valid Gemini schema
+    from google.genai import types
+    from app.models.analysis import CreativeSpecification
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=CreativeSpecification,
+        temperature=0.2
+    )
+    assert config.response_schema is CreativeSpecification
+

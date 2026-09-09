@@ -17,6 +17,7 @@ from app.models.analysis import (
 from app.models.grade import (
     ColorGradeParams,
     GradePlan,
+    InputTransformParams,
     ConsistencyScore,
     GradeResult,
     RevisionRecord,
@@ -126,10 +127,12 @@ class AutonomousColoristAgent:
         cached_frames: List[List[np.ndarray]] = []
         cached_timestamps: List[List[float]] = []
         resolved_profiles: List[str] = []
+        probed_infos: List[Dict[str, Any]] = []
         
         for i, path in enumerate(video_paths):
             shot_id = f"shot_{chr(65 + i)}"
             probed_info = probe_video(path)
+            probed_infos.append(probed_info)
             metrics = measure_shot_color(path, shot_id=shot_id)
             shot_metrics.append(metrics)
             
@@ -155,6 +158,52 @@ class AutonomousColoristAgent:
         ref_metrics = shot_metrics[ref_idx]
         ref_profile = resolved_profiles[ref_idx]
         
+        # 2b. PREFLIGHT NORMALIZATION GATE (Execute on ALL sequence shots BEFORE paid LLM calls)
+        log_event("Executing preflight normalization safety gates across all sequence shots...")
+        normalization_results: List[NormalizationValidationResult] = []
+        for i, path in enumerate(video_paths):
+            shot_id = f"shot_{chr(65 + i)}"
+            prof = resolved_profiles[i]
+            metrics = shot_metrics[i]
+            probed_info = probed_infos[i]
+            
+            norm_plan = GradePlan(
+                shot_id=f"{shot_id}_preflight_norm",
+                input_transform=InputTransformParams(
+                    is_log=is_log_profile(prof),
+                    profile=prof
+                )
+            )
+            norm_frames = [apply_color_grade_to_frame(f, norm_plan) for f in cached_frames[i]]
+            norm_res = assess_normalization_health(
+                shot_id=shot_id,
+                source_metrics=metrics,
+                normalized_frames=norm_frames,
+                profile=prof,
+                probed_info=probed_info
+            )
+            
+            shot_has_override = per_shot_overrides.get(i, False) or per_shot_confirmed.get(i, False)
+            if not norm_res.passed:
+                if shot_has_override and norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
+                    norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
+                    norm_res.passed = True
+                    log_event(f"  [Preflight Gate Override] {shot_id}: User explicitly overridden warning.")
+                elif norm_res.state == "NORMALIZATION_FAILED":
+                    log_event(f"  [Preflight Gate FAILED] {shot_id}: {norm_res.reason}")
+                    normalization_results.append(norm_res)
+                    raise RuntimeError(f"Shot '{shot_id}' failed normalization preflight ({norm_res.state}): {norm_res.reason}. Grading halted before LLM calls.")
+                else:
+                    log_event(f"  [Preflight Gate BLOCKED] {shot_id}: {norm_res.reason}")
+                    normalization_results.append(norm_res)
+                    raise RuntimeError(f"Shot '{shot_id}' requires profile confirmation before grading ({norm_res.state}): {norm_res.reason}. Confirmation required before LLM calls.")
+            
+            normalization_results.append(norm_res)
+            if norm_res.state == "NORMALIZATION_WARNING":
+                log_event(f"  [Preflight Gate WARNING] {shot_id}: {norm_res.reason}")
+            else:
+                log_event(f"  [Preflight Gate VERIFIED] {shot_id}: {norm_res.reason}")
+
         # 3. RESEARCH: Parallel Web Intelligence & Gemini Look Synthesis
         log_event(f"Researching cinematography principles on Parallel for: '{creative_prompt}'...")
         research_result = research_cinematography_principles(
@@ -201,31 +250,8 @@ class AutonomousColoristAgent:
             scene_intent=ref_scene_intent
         )
         
-        # P0-D: Normalization Validation Gate on Master Reference
-        ref_norm_frames = [apply_color_grade_to_frame(f, GradePlan(
-            shot_id=f"{ref_shot_id}_norm",
-            input_transform=ref_plan.input_transform
-        )) for f in cached_frames[ref_idx]]
-        
-        normalization_results: List[NormalizationValidationResult] = []
-        ref_norm_res = assess_normalization_health(ref_shot_id, ref_metrics, ref_norm_frames, profile=ref_profile)
-        
-        ref_has_override = per_shot_overrides.get(ref_idx, False) or per_shot_confirmed.get(ref_idx, False)
-        if not ref_norm_res.passed:
-            if ref_has_override and ref_norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
-                ref_norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
-                ref_norm_res.passed = True
-                log_event(f"  [Normalization Gate Override] {ref_shot_id}: User explicitly overridden warning.")
-            elif ref_norm_res.state == "NORMALIZATION_FAILED":
-                log_event(f"  [Normalization Gate FAILED] {ref_shot_id}: {ref_norm_res.reason}")
-                normalization_results.append(ref_norm_res)
-                raise RuntimeError(f"Master reference '{ref_shot_id}' failed normalization gate ({ref_norm_res.state}): {ref_norm_res.reason}. Grading halted before establishing master standard.")
-            else:
-                log_event(f"  [Normalization Gate BLOCKED] {ref_shot_id}: {ref_norm_res.reason}")
-                normalization_results.append(ref_norm_res)
-                raise RuntimeError(f"Master reference '{ref_shot_id}' requires profile confirmation ({ref_norm_res.state}): {ref_norm_res.reason}. Confirmation required before establishing master standard.")
-
-        normalization_results.append(ref_norm_res)
+        # Master Reference Preflight Normalization status
+        ref_norm_res = normalization_results[ref_idx]
         log_event(f"  [Normalization Gate] {ref_shot_id}: {ref_norm_res.state} — {ref_norm_res.reason}")
         
         # Grade reference sampled frames to establish true target metrics
@@ -278,8 +304,48 @@ class AutonomousColoristAgent:
             shot_scene_intent = creative_spec.get_scene_intent(semantic.scene_group_id)
             
             if is_ref:
-                log_event(f"Finalizing Master Reference {shot_id}...")
+                log_event(f"Finalizing and Validating Master Reference {shot_id}...")
                 plan = ref_plan
+                
+                # Check reference health gate before establishing standard
+                ref_health = evaluate_scene_health(
+                    source_metrics=ref_metrics,
+                    graded_metrics=graded_ref_metrics,
+                    graded_frames=graded_ref_frames,
+                    scene_intent=ref_scene_intent
+                )
+                
+                final_state = "ACCEPTED"
+                if not ref_health.hard_gates_passed or not ref_health.passed:
+                    log_event(f"  [Reference Health Notice] Master reference {shot_id} triggered health warning (Score: {ref_health.overall_score}/100, Gates: {ref_health.hard_gate_failures})")
+                    # Attempt targeted trim to resolve health failure
+                    revised_ref_plan = ref_plan.model_copy(deep=True)
+                    if revised_ref_plan.scene_trim is None:
+                        revised_ref_plan.scene_trim = SceneTrimParams()
+                    
+                    if any("shadow" in f.lower() for f in getattr(ref_health, "hard_gate_failures", [])):
+                        revised_ref_plan.scene_trim.trim_shadow_sat = 0.70
+                    if any("clip" in f.lower() for f in getattr(ref_health, "hard_gate_failures", [])):
+                        revised_ref_plan.scene_trim.trim_contrast = max(0.80, round(revised_ref_plan.scene_trim.trim_contrast * 0.90, 2))
+                        
+                    rev_frames = [apply_color_grade_to_frame(f, revised_ref_plan) for f in cached_frames[ref_idx]]
+                    rev_metrics, _ = evaluate_grade(
+                        reference_metrics=ref_metrics,
+                        graded_video_or_frames=rev_frames,
+                        evaluation_mode="same_scene_match",
+                        timestamps=cached_timestamps[ref_idx]
+                    )
+                    rev_health = evaluate_scene_health(ref_metrics, rev_metrics, rev_frames, ref_scene_intent)
+                    if rev_health.hard_gates_passed and rev_health.passed:
+                        plan = revised_ref_plan
+                        graded_ref_frames = rev_frames
+                        graded_ref_metrics = rev_metrics
+                        ref_health = rev_health
+                        log_event(f"  [Reference Health Recovered] Master reference health satisfied after targeted trim.")
+                    else:
+                        final_state = "WARNING_FLAGGED"
+                        log_event(f"  [Reference Health Warning] Master reference retained but flagged with {final_state}.")
+
                 before_score = compute_consistency_score(
                     reference=graded_ref_metrics,
                     candidate=metrics,
@@ -296,14 +362,13 @@ class AutonomousColoristAgent:
                     source_metrics=ref_metrics
                 )
                 revisions_performed = 0
-                final_state = "ACCEPTED"
                 history = [RevisionRecord(
                     iteration=0,
-                    state="ACCEPTED",
-                    action_taken="Master technical reference established standard.",
+                    state=final_state,
+                    action_taken="Master technical reference established standard." if final_state == "ACCEPTED" else f"Master reference standard established with {final_state}.",
                     overall_score_before=after_score.overall_score,
                     overall_score_after=after_score.overall_score,
-                    diagnosis="Reference baseline",
+                    diagnosis=after_score.diagnosis or "Reference baseline",
                     parameter_deltas={}
                 )]
                 best_plan = plan
@@ -322,29 +387,8 @@ class AutonomousColoristAgent:
                     scene_intent=shot_scene_intent
                 )
                 
-                # Check candidate normalization health
-                cand_norm_frames = [apply_color_grade_to_frame(f, GradePlan(
-                    shot_id=f"{shot_id}_norm",
-                    input_transform=initial_cand_plan.input_transform
-                )) for f in cached_frames[i]]
-                cand_norm_res = assess_normalization_health(shot_id, metrics, cand_norm_frames, profile=shot_profile)
-                
-                cand_has_override = per_shot_overrides.get(i, False) or per_shot_confirmed.get(i, False)
-                if not cand_norm_res.passed:
-                    if cand_has_override and cand_norm_res.state == "PROFILE_CONFIRMATION_REQUIRED":
-                        cand_norm_res.state = "NORMALIZATION_WARNING_OVERRIDDEN"
-                        cand_norm_res.passed = True
-                        log_event(f"  [Normalization Gate Override] {shot_id}: User explicitly overridden warning.")
-                    elif cand_norm_res.state == "NORMALIZATION_FAILED":
-                        log_event(f"  [Normalization Gate FAILED] {shot_id}: {cand_norm_res.reason}")
-                        normalization_results.append(cand_norm_res)
-                        raise RuntimeError(f"Candidate shot '{shot_id}' failed normalization gate ({cand_norm_res.state}): {cand_norm_res.reason}. Grading halted before evaluation and rendering.")
-                    else:
-                        log_event(f"  [Normalization Gate BLOCKED] {shot_id}: {cand_norm_res.reason}")
-                        normalization_results.append(cand_norm_res)
-                        raise RuntimeError(f"Candidate shot '{shot_id}' requires profile confirmation ({cand_norm_res.state}): {cand_norm_res.reason}. Grading halted before evaluation and rendering.")
-
-                normalization_results.append(cand_norm_res)
+                # Preflight normalization status
+                cand_norm_res = normalization_results[i]
                 log_event(f"  [Normalization Gate] {shot_id}: {cand_norm_res.state} — {cand_norm_res.reason}")
                 
                 if is_same_scene:
@@ -511,23 +555,45 @@ class AutonomousColoristAgent:
                                 if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
                                     deltas["trim_contrast"] = d_c
                                     proposed_plan.scene_trim.trim_contrast = new_c
-                                    action_desc = f"Softened scene trim contrast to {new_c}x"
+                                    action_desc = f"Softened scene trim contrast to {new_c}x to eliminate clipping"
+                                elif proposed_plan.scene_trim.trim_shadow_lift < 2.0:
+                                    new_lift = min(3.0, round(proposed_plan.scene_trim.trim_shadow_lift + 0.5, 2))
+                                    deltas["trim_shadow_lift"] = 0.5
+                                    proposed_plan.scene_trim.trim_shadow_lift = new_lift
+                                    action_desc = f"Lifted shadow toe by {new_lift} to recover clipped blacks"
                         else:
                             # Cross-Scene Diagnostic Policy: mutate ONLY scene_trim or technical_balance
-                            if best_health.shadow_saturation_health < 80.0 or not best_health.hard_gates_passed:
-                                new_sat = max(0.65, round(proposed_plan.scene_trim.trim_saturation * 0.85, 2))
-                                d_sat = round(new_sat - proposed_plan.scene_trim.trim_saturation, 2)
-                                if abs(d_sat) > 0.02 and ("trim_saturation", d_sat) not in rejected_deltas:
-                                    deltas["trim_saturation"] = d_sat
-                                    proposed_plan.scene_trim.trim_saturation = new_sat
-                                    action_desc = f"Reduced scene trim saturation to {new_sat}x to protect shadow health"
-                            elif best_score.clipping_health < 80.0 or best_health.clipping_health < 80.0:
+                            hard_failures = getattr(best_health, "hard_gate_failures", [])
+                            has_shadow_sat_fail = (best_health.shadow_saturation_health < 80.0 or any("shadow" in f.lower() for f in hard_failures))
+                            has_clip_fail = (best_score.clipping_health < 80.0 or best_health.clipping_health < 80.0 or any("clip" in f.lower() for f in hard_failures))
+
+                            if has_shadow_sat_fail:
+                                curr_sh_sat = getattr(proposed_plan.scene_trim, "trim_shadow_sat", 1.0)
+                                new_sh_sat = max(0.40, round(curr_sh_sat * 0.80, 2))
+                                d_sh_sat = round(new_sh_sat - curr_sh_sat, 2)
+                                if abs(d_sh_sat) > 0.02 and ("trim_shadow_sat", d_sh_sat) not in rejected_deltas:
+                                    deltas["trim_shadow_sat"] = d_sh_sat
+                                    proposed_plan.scene_trim.trim_shadow_sat = new_sh_sat
+                                    action_desc = f"Trimmed shadow saturation to {new_sh_sat}x to protect shadow health"
+                                else:
+                                    new_sat = max(0.65, round(proposed_plan.scene_trim.trim_saturation * 0.85, 2))
+                                    d_sat = round(new_sat - proposed_plan.scene_trim.trim_saturation, 2)
+                                    if abs(d_sat) > 0.02 and ("trim_saturation", d_sat) not in rejected_deltas:
+                                        deltas["trim_saturation"] = d_sat
+                                        proposed_plan.scene_trim.trim_saturation = new_sat
+                                        action_desc = f"Reduced scene trim saturation to {new_sat}x to protect shadow health"
+                            elif has_clip_fail:
                                 new_c = max(0.75, round(proposed_plan.scene_trim.trim_contrast * 0.90, 2))
                                 d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
                                 if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
                                     deltas["trim_contrast"] = d_c
                                     proposed_plan.scene_trim.trim_contrast = new_c
                                     action_desc = f"Softened scene trim contrast to {new_c}x to eliminate clipping"
+                                elif proposed_plan.scene_trim.trim_shadow_lift < 2.0:
+                                    new_lift = min(3.0, round(proposed_plan.scene_trim.trim_shadow_lift + 0.5, 2))
+                                    deltas["trim_shadow_lift"] = 0.5
+                                    proposed_plan.scene_trim.trim_shadow_lift = new_lift
+                                    action_desc = f"Lifted shadow toe by {new_lift} to recover clipped shadows"
                             elif best_health.exposure_appropriateness < 80.0 and shot_scene_intent:
                                 min_ev, max_ev = shot_scene_intent.source_relative_exposure_bounds
                                 curr_ev = best_health.source_relative_exposure_change_ev
