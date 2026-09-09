@@ -910,6 +910,28 @@ function displayShotResult(res, shotIdx, sourceVideos) {
         c4Val.appendChild(l9);
         c4Val.appendChild(l10);
         c4Val.appendChild(l11);
+
+        const tw = (res.plan && res.plan.three_way) ? res.plan.three_way : (summ.three_way || null);
+        if (tw) {
+            const hasZonal = Math.abs(tw.shadow_lift || 0) > 0.001 ||
+                             Math.abs((tw.midtone_gamma || 1.0) - 1.0) > 0.005 ||
+                             Math.abs((tw.highlight_gain || 1.0) - 1.0) > 0.005 ||
+                             Math.abs((tw.highlight_rolloff || 0.85) - 0.85) > 0.005;
+            if (hasZonal) {
+                const l12 = document.createElement("div");
+                l12.style.fontSize = "0.78rem";
+                l12.style.color = "var(--text-secondary)";
+                l12.style.marginTop = "0.25rem";
+                const zonalParts = [];
+                if (Math.abs(tw.shadow_lift || 0) > 0.001) zonalParts.push(`Toe Lift: ${tw.shadow_lift > 0 ? '+' : ''}${tw.shadow_lift.toFixed(2)}`);
+                if (Math.abs((tw.midtone_gamma || 1.0) - 1.0) > 0.005) zonalParts.push(`Mid γ: ${tw.midtone_gamma.toFixed(2)}`);
+                if (Math.abs((tw.highlight_gain || 1.0) - 1.0) > 0.005) zonalParts.push(`Hl Gain: ${tw.highlight_gain.toFixed(2)}`);
+                if (Math.abs((tw.highlight_rolloff || 0.85) - 0.85) > 0.005) zonalParts.push(`Rolloff: ${tw.highlight_rolloff.toFixed(2)}`);
+                l12.textContent = `Zonal: ${zonalParts.join(", ")}`;
+                c4Val.appendChild(l12);
+            }
+        }
+
         cell4.appendChild(c4Title);
         cell4.appendChild(c4Val);
         gridDiv.appendChild(cell4);

@@ -177,11 +177,11 @@ class GradePlan(BaseModel):
 
     def to_legacy_params(self) -> "ColorGradeParams":
         # Combines staged parameters into unified ColorGradeParams for backwards compatibility
-        total_exposure = self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev
-        total_contrast = self.creative_look.contrast * self.scene_trim.trim_contrast * getattr(self.three_way, "midtone_contrast", 1.0)
-        total_saturation = self.creative_look.saturation * self.scene_trim.trim_saturation
-        
         tw = self.three_way if hasattr(self, "three_way") and self.three_way is not None else ThreeWayTonalParams()
+        total_exposure = self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev
+        total_contrast = self.creative_look.contrast * self.scene_trim.trim_contrast * getattr(tw, "midtone_contrast", 1.0)
+        total_saturation = self.creative_look.saturation * self.scene_trim.trim_saturation * getattr(tw, "midtone_saturation", 1.0)
+        
         sh_offset = [self.creative_look.shadow_rgb_offset[c] + tw.shadow_rgb_offset[c] for c in range(3)]
         mid_offset = list(tw.midtone_rgb_offset)
         hl_offset = [self.creative_look.highlight_rgb_offset[c] + tw.highlight_rgb_offset[c] for c in range(3)]
@@ -225,9 +225,12 @@ class GradePlan(BaseModel):
         resolved_prof = camera_profile or self.input_transform.profile
         norm_applied = bool(self.input_transform.is_log or resolved_prof != "rec709")
 
+        tw = self.three_way if hasattr(self, "three_way") and self.three_way is not None else ThreeWayTonalParams()
+        tw_cont = getattr(tw, "midtone_contrast", 1.0)
+        tw_sat = getattr(tw, "midtone_saturation", 1.0)
         total_exposure = round(self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev, 3)
-        effective_contrast = round(self.creative_look.contrast * self.scene_trim.trim_contrast, 4)
-        effective_sat = round(self.creative_look.saturation * self.scene_trim.trim_saturation, 4)
+        effective_contrast = round(self.creative_look.contrast * self.scene_trim.trim_contrast * tw_cont, 4)
+        effective_sat = round(self.creative_look.saturation * self.scene_trim.trim_saturation * tw_sat, 4)
 
         in_summary = InputTransformSummary(
             profile=resolved_prof,

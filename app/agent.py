@@ -180,7 +180,7 @@ class SceneColoristAgent:
         if is_shadow_or_low_key:
             self.log_callback(f"  [{self.scene_id}] Low-key / shadow context detected: deep shadow crush accepted as intentional artistic depth.")
 
-        # 2. Build initial candidate plan (decoupling luminance across scenes)
+        # 2. Build initial candidate plan
         initial_cand_plan = build_grade_plan(
             reference=self.master_chroma_reference,
             target=metrics,
@@ -192,12 +192,8 @@ class SceneColoristAgent:
             matched_params=None,
             scene_intent=shot_scene_intent
         )
-        
-        # Guarantee luminance is graded individually
-        initial_cand_plan.scene_match.lab_l_gain = 1.0
-        initial_cand_plan.scene_match.lab_l_offset = 0.0
 
-        # 3. Match Colors Only: Sequence-wide chromatic alignment (CIELAB a*, b*)
+        # 3. Shot Match: Bounded Luminance Matching for Same-Scene, Natural Exposure for Independent Scenes
         cand_balanced_frames = [apply_color_grade_to_frame(f, GradePlan(
             shot_id=f"{shot_id}_balanced",
             input_transform=initial_cand_plan.input_transform,
@@ -215,33 +211,53 @@ class SceneColoristAgent:
             duration_sec=metrics.duration_sec
         )
         
-        ref_match_target = balanced_ref_metrics if (balanced_ref_metrics is not None and is_same_scene) else self.master_chroma_reference
-        residual_match = calculate_deterministic_match_params(
-            reference=ref_match_target,
-            target=balanced_cand_metrics,
-            strength=0.95,
-            match_luminance=False # Decouple luminance, match colors only!
-        )
-        initial_cand_plan.scene_match = SceneMatchParams(
-            lab_l_gain=1.0,
-            lab_l_offset=0.0,
-            lab_a_gain=float(np.clip(residual_match.lab_a_gain, 0.4, 2.5)),
-            lab_a_offset=float(np.clip(residual_match.lab_a_offset, -80.0, 80.0)),
-            lab_b_gain=float(np.clip(residual_match.lab_b_gain, 0.4, 2.5)),
-            lab_b_offset=float(np.clip(residual_match.lab_b_offset, -80.0, 80.0))
-        )
+        if is_same_scene:
+            # SAME-SCENE: Match luminance with bounded protection against clipping & composition disparity
+            bal_ref = balanced_ref_metrics if balanced_ref_metrics is not None else self.master_chroma_reference
+            residual_match = calculate_deterministic_match_params(
+                reference=bal_ref,
+                target=balanced_cand_metrics,
+                strength=0.95,
+                match_luminance=True
+            )
+            initial_cand_plan.scene_match = SceneMatchParams(
+                lab_l_gain=float(np.clip(residual_match.lab_l_gain, 0.5, 2.0)),
+                lab_l_offset=float(np.clip(residual_match.lab_l_offset, -60.0, 60.0)),
+                lab_a_gain=float(np.clip(residual_match.lab_a_gain, 0.4, 2.5)),
+                lab_a_offset=float(np.clip(residual_match.lab_a_offset, -80.0, 80.0)),
+                lab_b_gain=float(np.clip(residual_match.lab_b_gain, 0.4, 2.5)),
+                lab_b_offset=float(np.clip(residual_match.lab_b_offset, -80.0, 80.0))
+            )
+            self.log_callback(f"  [{self.scene_id}] Same-scene shot: restored bounded luminance matching (L_gain={initial_cand_plan.scene_match.lab_l_gain:.2f}, L_offset={initial_cand_plan.scene_match.lab_l_offset:+.1f})")
+        else:
+            # INDEPENDENT SCENE: Preserve natural exposure & lighting, match only chromaticity & creative look
+            residual_match = calculate_deterministic_match_params(
+                reference=self.master_chroma_reference,
+                target=balanced_cand_metrics,
+                strength=0.95,
+                match_luminance=False
+            )
+            initial_cand_plan.scene_match = SceneMatchParams(
+                lab_l_gain=1.0,
+                lab_l_offset=0.0,
+                lab_a_gain=float(np.clip(residual_match.lab_a_gain, 0.4, 2.5)),
+                lab_a_offset=float(np.clip(residual_match.lab_a_offset, -80.0, 80.0)),
+                lab_b_gain=float(np.clip(residual_match.lab_b_gain, 0.4, 2.5)),
+                lab_b_offset=float(np.clip(residual_match.lab_b_offset, -80.0, 80.0))
+            )
+            self.log_callback(f"  [{self.scene_id}] Independent scene: natural exposure preserved (L_gain=1.0, L_offset=0.0), matching colors only")
 
-        # 4. Context-Aware 3-Way Tonal Manipulation
+        # 4. Context-Aware 3-Way Tonal Manipulation: Kept neutral unless genuinely additional zonal correction needed
         if initial_cand_plan.three_way is None:
             initial_cand_plan.three_way = ThreeWayTonalParams()
             
         if is_sky_or_high_key:
             initial_cand_plan.three_way.highlight_rolloff = 0.88 # Soft filmic roll-off for sky
         if is_shadow_or_low_key:
-            initial_cand_plan.three_way.midtone_gamma = 1.05 # Retain readable midtones
-            initial_cand_plan.three_way.shadow_saturation = min(0.90, initial_cand_plan.three_way.shadow_saturation)
+            initial_cand_plan.three_way.midtone_gamma = 1.05 # Modest midtone gamma lift for shadow readability
 
         eval_mode = "same_scene_match" if is_same_scene else "cross_scene_look_continuity"
+        match_colors_only = not is_same_scene
 
         before_score = compute_consistency_score(
             reference=self.master_chroma_reference,
@@ -251,7 +267,7 @@ class SceneColoristAgent:
             cand_plan=None,
             scene_intent=shot_scene_intent,
             source_metrics=metrics,
-            match_colors_only=True
+            match_colors_only=match_colors_only
         )
 
         # 5. Review & Revision State Machine
@@ -264,7 +280,8 @@ class SceneColoristAgent:
             ref_plan=self.master_ref_plan,
             cand_plan=initial_cand_plan,
             scene_intent=shot_scene_intent,
-            source_metrics=metrics
+            source_metrics=metrics,
+            match_colors_only=match_colors_only
         )
         init_look_score = evaluate_transform_look_continuity(self.master_ref_plan, initial_cand_plan, eval_metrics)
         init_health_score = evaluate_scene_health(metrics, eval_metrics, initial_preview_frames, shot_scene_intent)
@@ -321,68 +338,115 @@ class SceneColoristAgent:
 
                 hard_failures = getattr(best_health, "hard_gate_failures", [])
                 has_shadow_sat_fail = (best_health.shadow_saturation_health < 80.0 or any("shadow" in f.lower() for f in hard_failures))
-                has_clip_fail = (not is_sky_or_high_key and not is_shadow_or_low_key and (best_score.clipping_health < 80.0 or any("clip" in f.lower() for f in hard_failures)))
+                has_clip_fail = (not is_sky_or_high_key and not is_shadow_or_low_key and (best_score.clipping_health < 80.0 or best_health.clipping_health < 80.0 or any("clip" in f.lower() for f in hard_failures)))
 
-                if has_shadow_sat_fail:
-                    curr_sh_sat = proposed_plan.three_way.shadow_saturation
-                    new_sh_sat = max(0.40, round(curr_sh_sat * 0.80, 2))
-                    d_sh_sat = round(new_sh_sat - curr_sh_sat, 2)
-                    if abs(d_sh_sat) > 0.02 and ("three_way_shadow_sat", d_sh_sat) not in rejected_deltas:
-                        deltas["three_way_shadow_sat"] = d_sh_sat
-                        proposed_plan.three_way.shadow_saturation = new_sh_sat
-                        proposed_plan.scene_trim.trim_shadow_sat = new_sh_sat
-                        action_desc = f"Trimmed shadow saturation to {new_sh_sat}x to protect shadow health"
-                elif best_score.chromatic_similarity < 70.0:
-                    delta_b = self.master_chroma_reference.avg_lab_mean[2] - eval_metrics.avg_lab_mean[2]
-                    delta_a = self.master_chroma_reference.avg_lab_mean[1] - eval_metrics.avg_lab_mean[1]
-                    t_adj = float(np.clip(delta_b * 0.35, -15.0, 15.0))
-                    tint_adj = float(np.clip(delta_a * 0.35, -10.0, 10.0))
-                    if abs(t_adj) > 0.5 or abs(tint_adj) > 0.5:
-                        new_temp = float(np.clip(proposed_plan.technical_balance.temperature + t_adj, -40.0, 40.0))
-                        new_tint = float(np.clip(proposed_plan.technical_balance.tint + tint_adj, -25.0, 25.0))
-                        d_t = round(new_temp - proposed_plan.technical_balance.temperature, 1)
-                        d_tint = round(new_tint - proposed_plan.technical_balance.tint, 1)
-                        if ("temperature", d_t) not in rejected_deltas:
-                            deltas["temperature"] = d_t
-                            deltas["tint"] = d_tint
-                            proposed_plan.technical_balance.temperature = round(new_temp, 1)
-                            proposed_plan.technical_balance.tint = round(new_tint, 1)
-                            action_desc = f"Refined white balance (temp: {d_t:+.1f}, tint: {d_tint:+.1f})"
-                elif best_health.midtone_readability < 70.0:
-                    curr_g = proposed_plan.three_way.midtone_gamma
-                    new_g = min(1.30, round(curr_g * 1.10, 2))
-                    d_g = round(new_g - curr_g, 2)
-                    if abs(d_g) > 0.02 and ("midtone_gamma", d_g) not in rejected_deltas:
-                        deltas["midtone_gamma"] = d_g
-                        proposed_plan.three_way.midtone_gamma = new_g
-                        action_desc = f"Adjusted 3-way midtone gamma to {new_g} to restore midtone body"
-                elif has_clip_fail:
-                    new_c = max(0.75, round(proposed_plan.scene_trim.trim_contrast * 0.90, 2))
-                    d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
-                    if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
-                        deltas["trim_contrast"] = d_c
-                        proposed_plan.scene_trim.trim_contrast = new_c
-                        action_desc = f"Softened contrast to {new_c}x to eliminate unwanted clipping"
-                    elif proposed_plan.three_way.shadow_lift < 0.05:
-                        new_lift = round(proposed_plan.three_way.shadow_lift + 0.02, 3)
-                        deltas["shadow_lift"] = 0.02
-                        proposed_plan.three_way.shadow_lift = new_lift
-                        action_desc = f"Lifted 3-way shadow toe by {new_lift} to recover clipped shadows"
-                elif best_health.exposure_appropriateness < 80.0 and shot_scene_intent:
-                    min_ev, max_ev = shot_scene_intent.source_relative_exposure_bounds
-                    curr_ev = best_health.source_relative_exposure_change_ev
-                    if curr_ev < min_ev:
-                        corr = min_ev - curr_ev
-                        new_trim_ev = round(proposed_plan.scene_trim.trim_exposure_ev + corr, 2)
-                        deltas["trim_exposure_ev"] = round(new_trim_ev - proposed_plan.scene_trim.trim_exposure_ev, 2)
-                        proposed_plan.scene_trim.trim_exposure_ev = new_trim_ev
-                        action_desc = f"Adjusted scene exposure by {corr:+.2f} EV into bounds"
-                    elif curr_ev > max_ev:
-                        corr = max_ev - curr_ev
-                        new_trim_ev = round(proposed_plan.scene_trim.trim_exposure_ev + corr, 2)
-                        deltas["trim_exposure_ev"] = round(new_trim_ev - proposed_plan.scene_trim.trim_exposure_ev, 2)
-                        proposed_plan.scene_trim.trim_exposure_ev = new_trim_ev
-                        action_desc = f"Adjusted scene exposure by {corr:+.2f} EV into bounds"
+                if is_same_scene:
+                    # Same-Scene Diagnostic Policy: mutate technical_balance or scene_trim
+                    if best_score.tonal_similarity < 70.0:
+                        p50_target = self.master_chroma_reference.p50_luminance if self.master_chroma_reference.p50_luminance > 0 else self.master_chroma_reference.avg_luminance
+                        p50_cand = eval_metrics.p50_luminance if eval_metrics.p50_luminance > 0 else eval_metrics.avg_luminance
+                        ev_adj = float(np.clip(np.log2(max(1.0, p50_target) / max(1.0, p50_cand)) * 0.45, -1.0, 1.0))
+                        if abs(ev_adj) > 0.02:
+                            new_ev = float(np.clip(proposed_plan.technical_balance.exposure_ev + ev_adj, -2.5, 2.5))
+                            d_ev = round(new_ev - proposed_plan.technical_balance.exposure_ev, 2)
+                            if ("exposure_ev", d_ev) not in rejected_deltas and abs(d_ev) > 0.02:
+                                deltas["exposure_ev"] = d_ev
+                                proposed_plan.technical_balance.exposure_ev = round(new_ev, 2)
+                                action_desc = f"Adjusted technical exposure by {d_ev:+.2f} EV"
+
+                        if not deltas:
+                            ref_iqr = self.master_chroma_reference.p75_luminance - self.master_chroma_reference.p25_luminance
+                            cand_iqr = eval_metrics.p75_luminance - eval_metrics.p25_luminance
+                            if ref_iqr > 10.0 and cand_iqr > 0.0:
+                                iqr_ratio = ref_iqr / max(5.0, cand_iqr)
+                                if iqr_ratio > 1.2:
+                                    new_c = min(1.30, round(proposed_plan.scene_trim.trim_contrast * 1.10, 2))
+                                    d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
+                                    if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
+                                        deltas["trim_contrast"] = d_c
+                                        proposed_plan.scene_trim.trim_contrast = new_c
+                                        action_desc = f"Steepened scene trim contrast to {new_c}x to match tonal spread"
+                                elif iqr_ratio < 0.8:
+                                    new_c = max(0.75, round(proposed_plan.scene_trim.trim_contrast * 0.90, 2))
+                                    d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
+                                    if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
+                                        deltas["trim_contrast"] = d_c
+                                        proposed_plan.scene_trim.trim_contrast = new_c
+                                        action_desc = f"Softened scene trim contrast to {new_c}x to match tonal spread"
+
+                    if not deltas and best_score.chromatic_similarity < 70.0:
+                        delta_b = self.master_chroma_reference.avg_lab_mean[2] - eval_metrics.avg_lab_mean[2]
+                        delta_a = self.master_chroma_reference.avg_lab_mean[1] - eval_metrics.avg_lab_mean[1]
+                        t_adj = float(np.clip(delta_b * 0.35, -15.0, 15.0))
+                        tint_adj = float(np.clip(delta_a * 0.35, -10.0, 10.0))
+                        if abs(t_adj) > 0.5 or abs(tint_adj) > 0.5:
+                            new_temp = float(np.clip(proposed_plan.technical_balance.temperature + t_adj, -40.0, 40.0))
+                            new_tint = float(np.clip(proposed_plan.technical_balance.tint + tint_adj, -25.0, 25.0))
+                            d_t = round(new_temp - proposed_plan.technical_balance.temperature, 1)
+                            d_tint = round(new_tint - proposed_plan.technical_balance.tint, 1)
+                            if ("temperature", d_t) not in rejected_deltas:
+                                deltas["temperature"] = d_t
+                                deltas["tint"] = d_tint
+                                proposed_plan.technical_balance.temperature = round(new_temp, 1)
+                                proposed_plan.technical_balance.tint = round(new_tint, 1)
+                                action_desc = f"Refined white balance (temp: {d_t:+.1f}, tint: {d_tint:+.1f})"
+
+                    if not deltas and not is_sky_or_high_key and not is_shadow_or_low_key and (best_score.clipping_health < 80.0 or any("clip" in f.lower() for f in hard_failures)):
+                        new_c = max(0.75, round(proposed_plan.scene_trim.trim_contrast * 0.90, 2))
+                        d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
+                        if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
+                            deltas["trim_contrast"] = d_c
+                            proposed_plan.scene_trim.trim_contrast = new_c
+                            action_desc = f"Softened scene trim contrast to {new_c}x to eliminate clipping"
+                        elif proposed_plan.scene_trim.trim_shadow_lift < 2.0:
+                            new_lift = min(3.0, round(proposed_plan.scene_trim.trim_shadow_lift + 0.5, 2))
+                            deltas["trim_shadow_lift"] = 0.5
+                            proposed_plan.scene_trim.trim_shadow_lift = new_lift
+                            action_desc = f"Lifted shadow toe by {new_lift} to recover clipped blacks"
+                else:
+                    # Cross-Scene Diagnostic Policy: mutate ONLY scene_trim or technical_balance
+                    if has_shadow_sat_fail:
+                        curr_sh_sat = getattr(proposed_plan.scene_trim, "trim_shadow_sat", 1.0)
+                        new_sh_sat = max(0.40, round(curr_sh_sat * 0.80, 2))
+                        d_sh_sat = round(new_sh_sat - curr_sh_sat, 2)
+                        if abs(d_sh_sat) > 0.02 and ("trim_shadow_sat", d_sh_sat) not in rejected_deltas:
+                            deltas["trim_shadow_sat"] = d_sh_sat
+                            proposed_plan.scene_trim.trim_shadow_sat = new_sh_sat
+                            action_desc = f"Trimmed shadow saturation to {new_sh_sat}x to protect shadow health"
+                        else:
+                            new_sat = max(0.65, round(proposed_plan.scene_trim.trim_saturation * 0.85, 2))
+                            d_sat = round(new_sat - proposed_plan.scene_trim.trim_saturation, 2)
+                            if abs(d_sat) > 0.02 and ("trim_saturation", d_sat) not in rejected_deltas:
+                                deltas["trim_saturation"] = d_sat
+                                proposed_plan.scene_trim.trim_saturation = new_sat
+                                action_desc = f"Reduced scene trim saturation to {new_sat}x to protect shadow health"
+                    elif has_clip_fail:
+                        new_c = max(0.75, round(proposed_plan.scene_trim.trim_contrast * 0.90, 2))
+                        d_c = round(new_c - proposed_plan.scene_trim.trim_contrast, 2)
+                        if abs(d_c) > 0.02 and ("trim_contrast", d_c) not in rejected_deltas:
+                            deltas["trim_contrast"] = d_c
+                            proposed_plan.scene_trim.trim_contrast = new_c
+                            action_desc = f"Softened scene trim contrast to {new_c}x to eliminate clipping"
+                        elif proposed_plan.scene_trim.trim_shadow_lift < 2.0:
+                            new_lift = min(3.0, round(proposed_plan.scene_trim.trim_shadow_lift + 0.5, 2))
+                            deltas["trim_shadow_lift"] = 0.5
+                            proposed_plan.scene_trim.trim_shadow_lift = new_lift
+                            action_desc = f"Lifted shadow toe by {new_lift} to recover clipped shadows"
+                    elif best_health.exposure_appropriateness < 80.0 and shot_scene_intent:
+                        min_ev, max_ev = shot_scene_intent.source_relative_exposure_bounds
+                        curr_ev = best_health.source_relative_exposure_change_ev
+                        if curr_ev < min_ev:
+                            corr = min_ev - curr_ev
+                            new_trim_ev = round(proposed_plan.scene_trim.trim_exposure_ev + corr, 2)
+                            deltas["trim_exposure_ev"] = round(new_trim_ev - proposed_plan.scene_trim.trim_exposure_ev, 2)
+                            proposed_plan.scene_trim.trim_exposure_ev = new_trim_ev
+                            action_desc = f"Lifted scene trim exposure by {corr:+.2f} EV into scene bounds"
+                        elif curr_ev > max_ev:
+                            corr = max_ev - curr_ev
+                            new_trim_ev = round(proposed_plan.scene_trim.trim_exposure_ev + corr, 2)
+                            deltas["trim_exposure_ev"] = round(new_trim_ev - proposed_plan.scene_trim.trim_exposure_ev, 2)
+                            proposed_plan.scene_trim.trim_exposure_ev = new_trim_ev
+                            action_desc = f"Lowered scene trim exposure by {corr:+.2f} EV into scene bounds"
 
                 if not deltas:
                     history.append(RevisionRecord(
@@ -409,7 +473,8 @@ class SceneColoristAgent:
                     ref_plan=self.master_ref_plan,
                     cand_plan=proposed_plan,
                     scene_intent=shot_scene_intent,
-                    source_metrics=metrics
+                    source_metrics=metrics,
+                    match_colors_only=match_colors_only
                 )
                 prop_look = evaluate_transform_look_continuity(self.master_ref_plan, proposed_plan, prop_metrics)
                 prop_health = evaluate_scene_health(metrics, prop_metrics, prop_preview_frames, shot_scene_intent)
@@ -433,15 +498,14 @@ class SceneColoristAgent:
                     elif prop_health.passed == best_health.passed:
                         health_diff = prop_health.overall_score - best_health.overall_score
                         if health_diff > 1.0:
-                            is_better = (continuity_drop <= 2.0)
-                        elif health_diff < -1.0:
-                            is_better = False
-                        else:
-                            if prop_score.overall_score > best_score.overall_score + 0.1:
+                            is_better = (continuity_drop <= 4.0)
+                        elif abs(health_diff) <= 1.0:
+                            score_diff = prop_score.overall_score - best_score.overall_score
+                            if score_diff > 0.5:
                                 is_better = True
-                            elif abs(prop_score.overall_score - best_score.overall_score) <= 0.1:
+                            elif abs(score_diff) <= 0.2:
                                 def _plan_delta_mag(p: GradePlan) -> float:
-                                    m = abs(p.technical_balance.exposure_ev) + abs(p.technical_balance.temperature) / 20.0 + abs(p.technical_balance.tint) / 20.0
+                                    m = abs(p.technical_balance.exposure_ev) + abs(p.technical_balance.temperature / 10.0) + abs(p.technical_balance.tint / 10.0)
                                     if p.scene_trim:
                                         m += abs(p.scene_trim.trim_exposure_ev) + abs(p.scene_trim.trim_contrast - 1.0) + abs(p.scene_trim.trim_saturation - 1.0)
                                     return m

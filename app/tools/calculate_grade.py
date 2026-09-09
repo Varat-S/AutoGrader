@@ -277,19 +277,9 @@ def build_grade_plan(
     )
     
     # 6. 3-WAY ZONAL COLORIST CONTROLS (Shadows, Midtones, Highlights)
-    plan.three_way = ThreeWayTonalParams(
-        shadow_lift=round(trim_lift / 255.0, 3) if abs(trim_lift) > 0.01 else 0.0,
-        shadow_rgb_offset=[0.0, 0.0, 0.0],
-        shadow_saturation=round(trim_shadow_sat, 3),
-        midtone_gamma=1.0,
-        midtone_contrast=round(trim_cont, 3),
-        midtone_rgb_offset=[0.0, 0.0, 0.0],
-        midtone_saturation=round(trim_sat, 3),
-        highlight_gain=1.0,
-        highlight_rolloff=0.85,
-        highlight_rgb_offset=[0.0, 0.0, 0.0],
-        highlight_saturation=1.0
-    )
+    # Kept neutral by default to prevent double-applying scene_trim adjustments.
+    # Populated only when genuinely additional zonal corrections are required.
+    plan.three_way = ThreeWayTonalParams()
 
     # 7. OUTPUT TRANSFORM
     plan.output_transform = OutputTransformParams(

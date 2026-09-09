@@ -17,7 +17,8 @@ def evaluate_grade(
     ref_plan: Optional[GradePlan] = None,
     cand_plan: Optional[GradePlan] = None,
     scene_intent: Optional[SceneIntent] = None,
-    source_metrics: Optional[ShotMetrics] = None
+    source_metrics: Optional[ShotMetrics] = None,
+    match_colors_only: bool = False
 ) -> Tuple[ShotMetrics, ConsistencyScore]:
     if isinstance(graded_video_or_frames, str):
         # Rendered video path
@@ -56,6 +57,7 @@ def evaluate_grade(
         cand_plan=cand_plan,
         scene_intent=scene_intent,
         graded_frames=frames,
-        source_metrics=source_metrics
+        source_metrics=source_metrics,
+        match_colors_only=match_colors_only
     )
     return graded_metrics, score
