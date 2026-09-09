@@ -194,3 +194,9 @@ pytest -v -m live
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 Open **`http://127.0.0.1:8000`** in your browser.
+
+---
+
+## 📄 License
+
+This project is open-source software licensed under the **[MIT License](LICENSE)**. See the [LICENSE](LICENSE) file for full details.
