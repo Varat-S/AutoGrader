@@ -172,6 +172,7 @@ class AutonomousColoristAgent:
             research_result=research_result,
             scene_analyses=semantic_analyses
         )
+        creative_spec.normalize_canonical_look()
         if creative_spec.synthesis_mode == "fallback":
             reason = getattr(creative_spec, "fallback_reason", None)
             if reason:
@@ -270,7 +271,10 @@ class AutonomousColoristAgent:
                 semantic.relationship_to_reference == "same_scene" or
                 semantic.scene_group_id == ref_semantic.scene_group_id
             )
-            eval_mode = "same_scene_match" if is_same_scene else "cross_scene_look_continuity"
+            if is_ref:
+                eval_mode = "reference_baseline"
+            else:
+                eval_mode = "same_scene_match" if is_same_scene else "cross_scene_look_continuity"
             shot_scene_intent = creative_spec.get_scene_intent(semantic.scene_group_id)
             
             if is_ref:
@@ -279,14 +283,14 @@ class AutonomousColoristAgent:
                 before_score = compute_consistency_score(
                     reference=graded_ref_metrics,
                     candidate=metrics,
-                    evaluation_mode="same_scene_match",
+                    evaluation_mode="reference_baseline",
                     scene_intent=ref_scene_intent,
                     source_metrics=metrics
                 )
                 after_score = compute_consistency_score(
                     reference=graded_ref_metrics,
                     candidate=graded_ref_metrics,
-                    evaluation_mode="same_scene_match",
+                    evaluation_mode="reference_baseline",
                     scene_intent=ref_scene_intent,
                     graded_frames=graded_ref_frames,
                     source_metrics=ref_metrics
@@ -415,7 +419,7 @@ class AutonomousColoristAgent:
                 log_event(f"  [Evaluate] Initial grade for {shot_id}: overall {initial_score.overall_score}/100 (Tone: {initial_score.tonal_similarity}, Chroma: {initial_score.chromatic_similarity}, Clip: {initial_score.clipping_health}, Health: {init_health_score.overall_score}/100)")
                 
                 is_initially_accepted = (
-                    (is_same_scene and initial_score.overall_score >= 75.0 and init_health_score.hard_gates_passed) or
+                    (is_same_scene and initial_score.overall_score >= 75.0 and init_health_score.passed and init_health_score.hard_gates_passed) or
                     (not is_same_scene and initial_score.overall_score >= 75.0 and init_look_score.overall_score >= 75.0 and init_health_score.passed and init_health_score.hard_gates_passed)
                 )
 
@@ -570,10 +574,41 @@ class AutonomousColoristAgent:
                         prop_look = evaluate_transform_look_continuity(ref_plan, proposed_plan, prop_metrics)
                         prop_health = evaluate_scene_health(metrics, prop_metrics, prop_preview_frames, shot_scene_intent)
                         
-                        is_better = (
-                            prop_health.hard_gates_passed and
-                            (prop_score.overall_score > best_score.overall_score + 0.5)
-                        )
+                        # Health-Aware Revision Ranking Hierarchy
+                        is_better = False
+                        if best_health.hard_gates_passed and not prop_health.hard_gates_passed:
+                            is_better = False
+                        elif prop_score.clipping_health < best_score.clipping_health - 2.0:
+                            is_better = False
+                        else:
+                            continuity_drop = best_score.overall_score - prop_score.overall_score
+                            best_gates = len(getattr(best_health, "hard_gate_failures", [])) if not best_health.hard_gates_passed else 0
+                            prop_gates = len(getattr(prop_health, "hard_gate_failures", [])) if not prop_health.hard_gates_passed else 0
+
+                            if prop_gates < best_gates:
+                                is_better = (continuity_drop <= 10.0)
+                            elif prop_gates > best_gates:
+                                is_better = False
+                            elif prop_health.passed and not best_health.passed:
+                                is_better = (continuity_drop <= 5.0)
+                            elif best_health.passed and not prop_health.passed:
+                                is_better = False
+                            elif prop_health.passed == best_health.passed:
+                                health_diff = prop_health.overall_score - best_health.overall_score
+                                if health_diff > 1.0:
+                                    is_better = (continuity_drop <= 4.0)
+                                elif abs(health_diff) <= 1.0:
+                                    score_diff = prop_score.overall_score - best_score.overall_score
+                                    if score_diff > 0.5:
+                                        is_better = True
+                                    elif abs(score_diff) <= 0.2:
+                                        def _plan_delta_mag(p: GradePlan) -> float:
+                                            m = abs(p.technical_balance.exposure_ev) + abs(p.technical_balance.temperature / 10.0) + abs(p.technical_balance.tint / 10.0)
+                                            if p.scene_trim:
+                                                m += abs(p.scene_trim.trim_exposure_ev) + abs(p.scene_trim.trim_contrast - 1.0) + abs(p.scene_trim.trim_saturation - 1.0)
+                                            return m
+                                        if _plan_delta_mag(proposed_plan) < _plan_delta_mag(best_plan) - 1e-4:
+                                            is_better = True
                         
                         if is_better:
                             history.append(RevisionRecord(
@@ -593,7 +628,7 @@ class AutonomousColoristAgent:
                             log_event(f"  [State] Revision {revisions_performed} IMPROVED score to {best_score.overall_score}/100. Updated best plan.")
                             
                             is_accepted = (
-                                (is_same_scene and best_score.overall_score >= 75.0 and best_health.hard_gates_passed) or
+                                (is_same_scene and best_score.overall_score >= 75.0 and best_health.passed and best_health.hard_gates_passed) or
                                 (not is_same_scene and best_score.overall_score >= 75.0 and best_look.overall_score >= 75.0 and best_health.passed and best_health.hard_gates_passed)
                             )
                             if is_accepted:
@@ -614,7 +649,10 @@ class AutonomousColoristAgent:
                             ))
                             log_event(f"  [State] Revision {revisions_performed} REJECTED ({prop_score.overall_score} vs best {best_score.overall_score}). Reverted to best plan.")
                             
-                    if final_state not in ["ACCEPTED", "NO_ACTIONABLE_REVISION"]:
+                    if not is_accepted and (not best_health.passed or not best_health.hard_gates_passed):
+                        final_state = "BEST_EFFORT_HEALTH_WARNING"
+                        log_event(f"  [Warning: Health Gate Active] {shot_id} -> BEST_EFFORT_HEALTH_WARNING (final score: {best_score.overall_score}/100, health: {best_health.overall_score}/100). Grade retained but has unresolved scene health or clipping issues.")
+                    elif final_state not in ["ACCEPTED", "NO_ACTIONABLE_REVISION"]:
                         final_state = "MAX_REVISIONS_REACHED"
                         log_event(f"  [State] {shot_id} -> MAX_REVISIONS_REACHED (final score: {best_score.overall_score}/100). Rendering verified best plan.")
                         
@@ -647,7 +685,9 @@ class AutonomousColoristAgent:
                 scene_class=active_intent.lighting_class if active_intent else "daylight",
                 scene_rationale=scene_rat,
                 camera_profile=shot_profile,
-                revision_state=final_state
+                revision_state=final_state,
+                highlight_bias=creative_spec.highlight_bias,
+                shadow_bias=creative_spec.shadow_bias
             )
             final_preview_frames = [apply_color_grade_to_frame(f, best_plan) for f in cached_frames[i]]
             final_look = evaluate_transform_look_continuity(ref_plan, best_plan, eval_metrics)

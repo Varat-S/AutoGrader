@@ -71,6 +71,7 @@ class SceneTrimParams(BaseModel):
     trim_exposure_ev: float = Field(0.0, ge=-2.0, le=2.0, description="Scene-specific mood / day-night trim")
     trim_contrast: float = Field(1.0, ge=0.7, le=1.4, description="Scene-specific contrast trim")
     trim_saturation: float = Field(1.0, ge=0.7, le=1.4, description="Scene-specific saturation trim")
+    trim_shadow_sat: float = Field(1.0, ge=0.2, le=1.5, description="Selective shadow zone saturation multiplier")
     trim_shadow_lift: float = Field(0.0, ge=-20.0, le=20.0, description="Scene-specific shadow toe trim")
 
 class OutputTransformParams(BaseModel):
@@ -80,12 +81,53 @@ class OutputTransformParams(BaseModel):
 
 from app.models.analysis import LookContinuityScore, SceneHealthScore
 
+class InputTransformSummary(BaseModel):
+    profile: str = "rec709"
+    normalization_applied: bool = False
+
+class TechnicalBalanceSummary(BaseModel):
+    exposure_ev: float = 0.0
+    temperature: float = 0.0
+    tint: float = 0.0
+
+class SharedCreativeLookSummary(BaseModel):
+    contrast: float = 1.0
+    saturation: float = 1.0
+    highlight_bias: str = "neutral"
+    shadow_bias: str = "neutral"
+
+class SceneTrimSummary(BaseModel):
+    trim_exposure_ev: float = 0.0
+    trim_contrast: float = 1.0
+    trim_saturation: float = 1.0
+    trim_shadow_lift: float = 0.0
+    exposure_ev: float = 0.0
+    contrast_multiplier: float = 1.0
+    saturation_multiplier: float = 1.0
+
+class EffectiveResultSummary(BaseModel):
+    exposure_ev: float = 0.0
+    contrast: float = 1.0
+    saturation: float = 1.0
+
 class EffectiveGradeSummary(BaseModel):
+    schema_version: int = 1
     shot_id: str
     scene_group_id: str = "group_1"
     scene_class: str = "daylight"
     scene_rationale: str = ""
+    camera_profile: str = "rec709"
     input_profile: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Structured nested contract
+    input_transform: InputTransformSummary = Field(default_factory=InputTransformSummary)
+    technical_balance: TechnicalBalanceSummary = Field(default_factory=TechnicalBalanceSummary)
+    shared_creative_look: SharedCreativeLookSummary = Field(default_factory=SharedCreativeLookSummary)
+    scene_trim: SceneTrimSummary = Field(default_factory=SceneTrimSummary)
+    effective_result: EffectiveResultSummary = Field(default_factory=EffectiveResultSummary)
+    
+    # Flat convenience / backwards-compatibility fields
+    effective_exposure_ev: float = 0.0
     technical_exposure_ev: float = 0.0
     scene_match_exposure_ev: float = 0.0
     scene_trim_exposure_ev: float = 0.0
@@ -138,22 +180,65 @@ class GradePlan(BaseModel):
         scene_rationale: str = "",
         input_profile_dict: Optional[Dict[str, Any]] = None,
         camera_profile: Optional[str] = None,
-        revision_state: str = "ACCEPTED"
+        revision_state: str = "ACCEPTED",
+        highlight_bias: str = "neutral",
+        shadow_bias: str = "neutral"
     ) -> EffectiveGradeSummary:
+        resolved_prof = camera_profile or self.input_transform.profile
+        norm_applied = bool(self.input_transform.is_log or resolved_prof != "rec709")
+
         total_exposure = round(self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev, 3)
         effective_contrast = round(self.creative_look.contrast * self.scene_trim.trim_contrast, 4)
         effective_sat = round(self.creative_look.saturation * self.scene_trim.trim_saturation, 4)
 
-        input_dict = input_profile_dict or {"resolved": camera_profile or self.input_transform.profile}
+        in_summary = InputTransformSummary(
+            profile=resolved_prof,
+            normalization_applied=norm_applied
+        )
+        tech_summary = TechnicalBalanceSummary(
+            exposure_ev=round(self.technical_balance.exposure_ev, 3),
+            temperature=round(self.technical_balance.temperature, 2),
+            tint=round(self.technical_balance.tint, 2)
+        )
+        shared_summary = SharedCreativeLookSummary(
+            contrast=round(self.creative_look.contrast, 3),
+            saturation=round(self.creative_look.saturation, 3),
+            highlight_bias=highlight_bias,
+            shadow_bias=shadow_bias
+        )
+        trim_summary = SceneTrimSummary(
+            trim_exposure_ev=round(self.scene_trim.trim_exposure_ev, 3),
+            trim_contrast=round(self.scene_trim.trim_contrast, 3),
+            trim_saturation=round(self.scene_trim.trim_saturation, 3),
+            trim_shadow_lift=round(self.scene_trim.trim_shadow_lift, 2),
+            exposure_ev=round(self.scene_trim.trim_exposure_ev, 3),
+            contrast_multiplier=round(self.scene_trim.trim_contrast, 3),
+            saturation_multiplier=round(self.scene_trim.trim_saturation, 3)
+        )
+        eff_res = EffectiveResultSummary(
+            exposure_ev=total_exposure,
+            contrast=effective_contrast,
+            saturation=effective_sat
+        )
+
+        input_dict = input_profile_dict or {"resolved": resolved_prof}
         if "resolved" not in input_dict:
-            input_dict["resolved"] = camera_profile or self.input_transform.profile
+            input_dict["resolved"] = resolved_prof
 
         return EffectiveGradeSummary(
+            schema_version=1,
             shot_id=self.shot_id,
             scene_group_id=scene_group_id,
             scene_class=scene_class,
             scene_rationale=scene_rationale,
+            camera_profile=resolved_prof,
             input_profile=input_dict,
+            input_transform=in_summary,
+            technical_balance=tech_summary,
+            shared_creative_look=shared_summary,
+            scene_trim=trim_summary,
+            effective_result=eff_res,
+            effective_exposure_ev=total_exposure,
             technical_exposure_ev=round(self.technical_balance.exposure_ev, 3),
             scene_match_exposure_ev=0.0,
             scene_trim_exposure_ev=round(self.scene_trim.trim_exposure_ev, 3),

@@ -102,3 +102,19 @@ def test_api_accepts_all_four_preset_prompts():
             )
             assert res_run.status_code == 200, f"Prompt failed validation: {res_run.text}"
             assert res_run.json()["status"] == "queued"
+
+def test_load_demo_clamps_and_rejects_excess():
+    res = client.post("/api/jobs")
+    assert res.status_code == 200
+    job_id = res.json()["job_id"]
+
+    # First load succeeds
+    res_load = client.post(f"/api/jobs/{job_id}/load_demo")
+    assert res_load.status_code == 200
+    data = res_load.json()
+    assert len(data["all_clips"]) <= 4
+
+    # Second load with identical clips already present returns 400
+    res_load2 = client.post(f"/api/jobs/{job_id}/load_demo")
+    assert res_load2.status_code == 400
+    assert "no new valid demo clips" in res_load2.json()["detail"].lower() or "limit" in res_load2.json()["detail"].lower()

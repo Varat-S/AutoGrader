@@ -148,30 +148,33 @@ def build_grade_plan(
         
     # 4. SHARED CREATIVE LOOK
     if creative_spec:
-        look_contrast = creative_spec.contrast_intent
-        look_sat = creative_spec.saturation_intent
-        mist = creative_spec.black_mist_diffusion_strength
+        canonical_look = creative_spec.get_canonical_global_look()
+        look_contrast = canonical_look.base_contrast
+        look_sat = canonical_look.base_saturation
+        mist = canonical_look.black_mist_diffusion_strength
         
-        if getattr(creative_spec, "highlight_rgb_offset", None) and len(creative_spec.highlight_rgb_offset) == 3:
-            hl_bias = [float(np.clip(x, -0.15, 0.15)) for x in creative_spec.highlight_rgb_offset]
+        # Apply direct numeric offsets if present, named string biases only as fallback
+        if canonical_look.highlight_rgb_offset is not None and len(canonical_look.highlight_rgb_offset) == 3:
+            hl_bias = [float(np.clip(x, -0.15, 0.15)) for x in canonical_look.highlight_rgb_offset]
         else:
-            hl_bias = parse_highlight_bias_rgb(creative_spec.highlight_bias)
+            hl_bias = parse_highlight_bias_rgb(canonical_look.highlight_bias)
             
-        if getattr(creative_spec, "shadow_rgb_offset", None) and len(creative_spec.shadow_rgb_offset) == 3:
-            sh_bias = [float(np.clip(x, -0.15, 0.15)) for x in creative_spec.shadow_rgb_offset]
+        if canonical_look.shadow_rgb_offset is not None and len(canonical_look.shadow_rgb_offset) == 3:
+            sh_bias = [float(np.clip(x, -0.15, 0.15)) for x in canonical_look.shadow_rgb_offset]
         else:
-            sh_bias = parse_shadow_bias_rgb(creative_spec.shadow_bias)
+            sh_bias = parse_shadow_bias_rgb(canonical_look.shadow_bias)
             
-        toe_lift = parse_black_level_lift(creative_spec.black_level_treatment, mist)
+        toe_lift = parse_black_level_lift(canonical_look.black_level_character, mist)
         
         plan.creative_look = CreativeLookParams(
-            look_title=creative_spec.look_title,
+            look_title=canonical_look.look_title,
             contrast=round(look_contrast, 3),
             pivot=0.45,
             saturation=round(look_sat, 3),
             shadow_rgb_offset=sh_bias,
             highlight_rgb_offset=hl_bias,
-            black_toe_lift=round(toe_lift, 2)
+            black_toe_lift=round(toe_lift, 2),
+            black_mist_strength=mist
         )
     else:
         # Neutral baseline with zero artificial color bias
@@ -190,18 +193,39 @@ def build_grade_plan(
     trim_cont = 1.0
     trim_sat = 1.0
     trim_lift = 0.0
+    trim_shadow_sat = 1.0
     
     if scene_intent is None and creative_spec and target_semantic:
         scene_intent = creative_spec.get_scene_intent(target_semantic.scene_group_id)
 
     if scene_intent and not is_same_scene and not is_reference_shot:
         exp_class = scene_intent.exposure_class.lower()
+        light_class = scene_intent.lighting_class.lower()
         min_ev, max_ev = scene_intent.source_relative_exposure_bounds
         
         # Check source condition from target metrics
         is_target_dark = (target.p50_luminance < 20.0 or target.avg_luminance < 35.0)
         
-        if exp_class in ["underexposed", "low_key_underexposed"] and is_target_dark:
+        if exp_class == "low_key_underexposed" or light_class == "low_key_underexposed":
+            # For low_key_underexposed: bound trim_exposure_ev to [-0.6, 0.0] and trim_contrast to [0.90, 1.10]
+            eff_min = max(min_ev, -0.6)
+            eff_max = min(max_ev, 0.0)
+            trim_ev = float(np.clip(0.0, eff_min, eff_max))
+            trim_cont = float(np.clip(1.0, 0.90, 1.10))
+            trim_lift = 0.5
+        elif exp_class == "low_key_night" or light_class in ["low_key_night", "night"]:
+            # For low_key_night: preserve natural darkness (trim_exposure_ev in [-0.8, -0.2], trim_contrast in [0.85, 1.05])
+            eff_min = max(min_ev, -0.8)
+            eff_max = min(max_ev, -0.2)
+            trim_ev = float(np.clip(-0.4, eff_min, eff_max))
+            trim_cont = float(np.clip(0.95, 0.85, 1.05))
+        elif exp_class == "intentional_silhouette" or light_class == "intentional_silhouette":
+            # For intentional_silhouette: do not force exposure upward; set trim_exposure_ev in [-1.5, -0.3] and trim_contrast in [1.10, 1.40]
+            eff_min = max(min_ev, -1.5)
+            eff_max = min(max_ev, -0.3)
+            trim_ev = float(np.clip(-0.8, eff_min, eff_max))
+            trim_cont = float(np.clip(1.20, 1.10, 1.40))
+        elif exp_class in ["underexposed"] and is_target_dark:
             # Allow modest lift when doing so restores readable midtones without destroying intended night mood
             trim_ev = float(np.clip(0.35, min_ev, max_ev))
             trim_lift = 1.0
@@ -210,14 +234,29 @@ def build_grade_plan(
             trim_ev = float(np.clip(-0.35, min_ev, max_ev))
         else:
             # Balanced / intentionally low-key: NO automatic exposure reduction
-            trim_ev = 0.0
-            
-        # Saturation ceiling handling for dark scenes
-        if scene_intent.lighting_class in ["low_key_night", "night", "dark_interior"]:
-            if scene_intent.shadow_saturation_ceiling < 1.0:
-                trim_sat = float(scene_intent.shadow_saturation_ceiling)
-        elif scene_intent.lighting_class == "golden_hour":
+            trim_ev = float(np.clip(0.0, min_ev, max_ev))
+
+        # Always enforce source_relative_exposure_bounds as hard ceiling on allowable trim
+        trim_ev = float(np.clip(trim_ev, min_ev, max_ev))
+
+        # Contrast trim bounds
+        if scene_intent.contrast_trim_bounds and len(scene_intent.contrast_trim_bounds) == 2:
+            c_min, c_max = scene_intent.contrast_trim_bounds
+            trim_cont = float(np.clip(trim_cont, c_min, c_max))
+
+        # Saturation trim bounds & shadow saturation ceiling handling
+        s_bounds = getattr(scene_intent, "scene_saturation_trim_bounds", None) or getattr(scene_intent, "saturation_trim_bounds", [0.70, 1.20])
+        if s_bounds and len(s_bounds) == 2:
+            s_min, s_max = s_bounds
+        else:
+            s_min, s_max = 0.70, 1.20
+
+        if light_class in ["low_key_night", "night", "dark_interior"]:
+            trim_sat = min(trim_sat, 0.90)
+            trim_shadow_sat = 0.80
+        elif light_class == "golden_hour":
             trim_sat = 1.05
+        trim_sat = float(np.clip(trim_sat, s_min, s_max))
     elif target_semantic:
         if target_semantic.time_of_day == "golden_hour":
             trim_sat = 1.05
@@ -226,6 +265,7 @@ def build_grade_plan(
         trim_exposure_ev=round(trim_ev, 3),
         trim_contrast=round(trim_cont, 3),
         trim_saturation=round(trim_sat, 3),
+        trim_shadow_sat=round(trim_shadow_sat, 3),
         trim_shadow_lift=round(trim_lift, 2)
     )
     

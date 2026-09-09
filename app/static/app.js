@@ -612,17 +612,40 @@ function renderResults(result, sourceVideos) {
     citationsList.innerHTML = "";
     if (result.research_citations && result.research_citations.length > 0) {
         result.research_citations.forEach(c => {
+            const item = document.createElement("div");
+            item.className = "citation-item";
+            item.style.marginBottom = "0.5rem";
+
             const link = document.createElement("a");
             link.className = "citation-link";
-            if (c.url && (c.url.startsWith("http://") || c.url.startsWith("https://"))) {
+            const validUrl = c.url && (c.url.startsWith("http://") || c.url.startsWith("https://"));
+            if (validUrl) {
                 link.href = c.url;
                 link.target = "_blank";
                 link.rel = "noopener noreferrer";
             } else {
                 link.href = "#";
             }
-            link.textContent = `Source: ${c.title}`;
-            citationsList.appendChild(link);
+            link.textContent = `Source: ${c.title || "Cinematography Reference"}`;
+            item.appendChild(link);
+
+            if (c.extracted_principle) {
+                const princ = document.createElement("div");
+                princ.style.fontSize = "0.78rem";
+                princ.style.color = "#94a3b8";
+                princ.style.marginTop = "0.15rem";
+                princ.textContent = c.extracted_principle;
+                item.appendChild(princ);
+            }
+            if (c.influence) {
+                const infl = document.createElement("div");
+                infl.style.fontSize = "0.74rem";
+                infl.style.color = "#38bdf8";
+                infl.style.marginTop = "0.1rem";
+                infl.textContent = `Influence: ${c.influence}`;
+                item.appendChild(infl);
+            }
+            citationsList.appendChild(item);
         });
     } else {
         const fallbackText = document.createElement("div");
@@ -699,16 +722,16 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     iconPlay.style.display = "block";
     iconPause.style.display = "none";
     
-    // Update Side-by-Side Players
+    // Update Side-by-Side Players with matched browser proxies
     const playerBefore = document.getElementById("player-before");
     const playerAfter = document.getElementById("player-after");
     if (playerBefore && playerAfter) {
-        playerBefore.src = beforeVideoUrl;
-        playerAfter.src = afterVideoUrl;
+        playerBefore.src = sliderBeforeUrl;
+        playerAfter.src = sliderAfterUrl;
     }
     
-    document.getElementById("label-source-shot").textContent = `Source: ${res.target_shot_id} (${sourceFilename})`;
-    document.getElementById("label-graded-shot").textContent = `Graded: ${res.target_shot_id}`;
+    document.getElementById("label-source-shot").textContent = `Ungraded Proxy: ${res.target_shot_id}`;
+    document.getElementById("label-graded-shot").textContent = `Graded Proxy: ${res.target_shot_id}`;
     
     // Scores
     const beforeScore = Math.round(res.before_consistency.overall_score);
@@ -813,7 +836,7 @@ function displayShotResult(res, shotIdx, sourceVideos) {
     const btnVid = document.getElementById("btn-download-video");
     btnVid.href = afterVideoUrl;
     btnVid.download = `${res.target_shot_id}_graded.mp4`;
-    btnVid.textContent = `Download ${res.target_shot_id} Master Video (.mp4)`;
+    btnVid.textContent = `Download Delivery Video (.mp4)`;
     
     const btnLut = document.getElementById("btn-download-lut");
     btnLut.href = lutUrl;

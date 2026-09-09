@@ -191,21 +191,41 @@ def load_demo_sequence(job_id: str):
         fixtures_dir = Path("tests/fixtures/sample_videos")
 
     if not fixtures_dir.exists():
-        raise HTTPException(status_code=500, detail="Demo fixtures not found")
+        raise HTTPException(status_code=400, detail="Demo fixtures directory not found")
         
     job = jobs[job_id]
+    if len(job["source_videos"]) >= MAX_CLIPS_PER_JOB:
+        raise HTTPException(status_code=400, detail=f"Job already reached maximum limit of {MAX_CLIPS_PER_JOB} video clips.")
+
+    available_samples = [s for s in sorted(fixtures_dir.glob("*.mp4")) if s.is_file() and s.stat().st_size > 0]
+    if not available_samples:
+        raise HTTPException(status_code=400, detail="No valid demo video clips found.")
+
+    remaining_slots = MAX_CLIPS_PER_JOB - len(job["source_videos"])
+    samples_to_load = available_samples[:remaining_slots]
+
     job_source_dir = JOBS_DIR / job_id / "source"
-    
     loaded = []
-    for idx, sample in enumerate(sorted(fixtures_dir.glob("*.mp4")), len(job["source_videos"]) + 1):
+    
+    # Avoid duplicate content by tracking existing basenames
+    existing_basenames = {Path(p).name.split("_", 2)[-1] for p in job["source_videos"]}
+    
+    for sample in samples_to_load:
+        if sample.name in existing_basenames:
+            continue
+        idx = len(job["source_videos"]) + 1
         dest_filename = f"shot_{idx}_{sample.name}"
         dest = job_source_dir / dest_filename
         shutil.copyfile(sample, dest)
         dest_str = str(dest)
         if dest_str not in job["source_videos"]:
             job["source_videos"].append(dest_str)
-        loaded.append(dest_filename)
+            existing_basenames.add(sample.name)
+            loaded.append(dest_filename)
         
+    if not loaded:
+        raise HTTPException(status_code=400, detail="No new valid demo clips could be loaded (all clips already present or limit reached).")
+
     job["events"].append(f"Loaded {len(loaded)} demo clip(s).")
     return {"status": "success", "loaded": loaded, "all_clips": [Path(p).name for p in job["source_videos"]]}
 

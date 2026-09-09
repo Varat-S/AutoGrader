@@ -391,6 +391,7 @@ def apply_color_grade_to_frame(
         contrast = plan.creative_look.contrast * plan.scene_trim.trim_contrast
         pivot = plan.creative_look.pivot
         saturation = plan.creative_look.saturation * plan.scene_trim.trim_saturation
+        shadow_sat_trim = getattr(plan.scene_trim, "trim_shadow_sat", 1.0)
         shadow_bias = plan.creative_look.shadow_rgb_offset
         highlight_bias = plan.creative_look.highlight_rgb_offset
         black_toe_lift = plan.creative_look.black_toe_lift + plan.scene_trim.trim_shadow_lift
@@ -419,6 +420,7 @@ def apply_color_grade_to_frame(
         shadow_bias = params.shadow_rgb_offset
         highlight_bias = params.highlight_rgb_offset
         black_toe_lift = 0.0
+        shadow_sat_trim = 1.0
         
         shoulder_thresh = 0.85
         compression_factor = 2.0
@@ -501,7 +503,7 @@ def apply_color_grade_to_frame(
     img = np.clip(img, 0.0, 1.0)
 
     # D. Saturation in Pure Float32 HSV space with Luminance-Zone Awareness & Clipping Guard
-    if abs(saturation - 1.0) > 0.005:
+    if abs(saturation - 1.0) > 0.005 or abs(shadow_sat_trim - 1.0) > 0.005:
         hsv = cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2HSV)
         sat_channel = hsv[:, :, 1]
         
@@ -515,6 +517,11 @@ def apply_color_grade_to_frame(
         else:
             eff_sat = saturation
             
+        # Selective shadow-region saturation damping
+        if abs(shadow_sat_trim - 1.0) > 0.005:
+            shadow_zone_weight = np.clip((0.30 - pix_lum) / 0.30, 0.0, 1.0)
+            eff_sat = eff_sat * (1.0 - shadow_zone_weight * (1.0 - shadow_sat_trim))
+
         sat_channel = sat_channel * eff_sat
         
         # RGB channel clipping guard: dampen saturation boost as any channel approaches clipping (>0.94)
@@ -697,7 +704,12 @@ def evaluate_scene_health(
     src_iqr = source_metrics.p75_luminance - source_metrics.p25_luminance
     
     lighting = scene_intent.lighting_class if scene_intent else "daylight"
-    if lighting in ["low_key_night", "practical_night"]:
+    exp_intent = scene_intent.exposure_class if scene_intent else "balanced"
+    is_silhouette = (lighting == "intentional_silhouette" or exp_intent == "intentional_silhouette")
+    
+    if is_silhouette:
+        mid_score = 100.0
+    elif lighting in ["low_key_night", "practical_night"] or exp_intent in ["low_key", "low_key_underexposed"]:
         if src_p50 >= 20.0 and grd_p50 < 15.0:
             mid_score = max(20.0, 100.0 - (15.0 - grd_p50) * 8.0)
         else:
@@ -708,11 +720,11 @@ def evaluate_scene_health(
         else:
             mid_score = 100.0
             
-    if grd_iqr < 18.0 and src_iqr > 35.0:
+    if not is_silhouette and grd_iqr < 18.0 and src_iqr > 35.0:
         mid_score = min(mid_score, max(20.0, 100.0 - (18.0 - grd_iqr) * 4.0))
         
     # Hard Gate 3: Midtone crush (source had midtones > 25, graded fell below 10)
-    if src_p50 > 25.0 and grd_p50 < 10.0:
+    if not is_silhouette and src_p50 > 25.0 and grd_p50 < 10.0:
         hard_gate_failures.append(f"Midtone crush: midtones collapsed below readable floor (source p50={src_p50:.1f}, graded p50={grd_p50:.1f})")
 
     # 3. Clipping Health
@@ -728,55 +740,88 @@ def evaluate_scene_health(
     if hl_clip > 8.0:
         hard_gate_failures.append(f"Excessive highlight clipping ({hl_clip:.1f}% > 8.0%)")
         
-    # 4. Shadow Saturation Health
+    # 4. Shadow and Midtone Saturation Health (Normalized HSV [0.0, 1.0] Space)
     mean_shadow_sat = 0.0
+    mean_mid_sat = 0.0
     mean_hl_sat = 0.0
     if graded_frames and len(graded_frames) > 0:
         shadow_sats = []
+        mid_sats = []
         hl_sats = []
         for f in graded_frames:
             f_bgr = f if f.dtype == np.uint8 else (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
             gray = cv2.cvtColor(f_bgr, cv2.COLOR_BGR2GRAY)
             hsv = cv2.cvtColor(f_bgr, cv2.COLOR_BGR2HSV)
-            s_chan = hsv[:, :, 1]
+            s_chan = hsv[:, :, 1].astype(np.float32) / 255.0
             sh_mask = gray < 45
-            hl_mask = gray > 230
+            mid_mask = (gray >= 45) & (gray <= 200)
+            hl_mask = gray > 200
             if np.any(sh_mask):
                 shadow_sats.append(float(np.mean(s_chan[sh_mask])))
+            if np.any(mid_mask):
+                mid_sats.append(float(np.mean(s_chan[mid_mask])))
             if np.any(hl_mask):
                 hl_sats.append(float(np.mean(s_chan[hl_mask])))
         if shadow_sats:
             mean_shadow_sat = float(np.mean(shadow_sats))
+        if mid_sats:
+            mean_mid_sat = float(np.mean(mid_sats))
         if hl_sats:
             mean_hl_sat = float(np.mean(hl_sats))
     else:
-        mean_shadow_sat = min(255.0, graded_metrics.avg_chroma * 3.5)
-        
-    sat_ceiling = scene_intent.shadow_saturation_ceiling if scene_intent else 0.85
-    ceiling_255 = sat_ceiling * 255.0
-    if mean_shadow_sat > ceiling_255:
-        sat_pen = min(75.0, (mean_shadow_sat - ceiling_255) / 255.0 * 150.0)
+        mean_shadow_sat = float(np.clip(graded_metrics.avg_chroma * 0.015, 0.0, 1.0))
+        mean_mid_sat = float(np.clip(graded_metrics.avg_chroma * 0.020, 0.0, 1.0))
+        mean_hl_sat = float(np.clip(graded_metrics.avg_chroma * 0.010, 0.0, 1.0))
+
+    # Read ceilings from SceneIntent (or defaults in normalized [0, 1] HSV space)
+    raw_sh_ceil = getattr(scene_intent, "shadow_output_chroma_ceiling", None)
+    if raw_sh_ceil is None:
+        raw_sh_ceil = getattr(scene_intent, "shadow_saturation_ceiling", 0.35)
+        if raw_sh_ceil > 1.0:
+            raw_sh_ceil = raw_sh_ceil / 255.0
+    raw_mid_ceil = getattr(scene_intent, "midtone_output_chroma_ceiling", 0.70)
+    if raw_mid_ceil > 1.0:
+        raw_mid_ceil = raw_mid_ceil / 255.0
+
+    # Deterministic hard policy bounds: model cannot widen health thresholds beyond safe limits
+    is_dark_scene = (grd_p50 < 25.0 or (scene_intent and scene_intent.lighting_class in ["low_key_night", "night", "practical_night"]))
+    max_safe_sh_ceiling = 0.40 if is_dark_scene else 0.55
+    effective_sh_ceil = min(max_safe_sh_ceiling, float(raw_sh_ceil))
+    effective_mid_ceil = min(0.75, float(raw_mid_ceil))
+
+    if mean_shadow_sat > effective_sh_ceil:
+        sat_pen = min(80.0, (mean_shadow_sat - effective_sh_ceil) / max(0.1, 1.0 - effective_sh_ceil) * 120.0)
         shadow_sat_score = max(0.0, 100.0 - sat_pen)
     else:
         shadow_sat_score = 100.0
-        
+
     # Hard Gate 2: Shadow oversaturation in dark scenes
-    if grd_p50 < 25.0 and (mean_shadow_sat > 150.0 or (graded_metrics.avg_chroma > 45.0 and mean_shadow_sat > 100.0)):
-        hard_gate_failures.append(f"Severe shadow oversaturation in dark scene (median lum={grd_p50:.1f}, shadow sat={mean_shadow_sat:.1f}/255)")
+    if grd_p50 < 25.0 and (mean_shadow_sat > 0.40 or (graded_metrics.avg_chroma > 25.0 and mean_shadow_sat > 0.35)):
+        hard_gate_failures.append(f"Severe shadow oversaturation in dark scene (median lum={grd_p50:.1f}, shadow sat={mean_shadow_sat:.2f} > {effective_sh_ceil:.2f})")
+
+    # Midtone chroma health
+    if mean_mid_sat > effective_mid_ceil:
+        mid_pen = min(50.0, (mean_mid_sat - effective_mid_ceil) / max(0.1, 1.0 - effective_mid_ceil) * 100.0)
+        midtone_chroma_score = max(30.0, 100.0 - mid_pen)
+        if mean_mid_sat > 0.85:
+            hard_gate_failures.append(f"Excessive midtone saturation (midtone sat={mean_mid_sat:.2f} > 0.85)")
+    else:
+        midtone_chroma_score = 100.0
 
     # 5. Highlight Chroma Health
-    if mean_hl_sat > 100.0:
-        hl_pen = min(60.0, (mean_hl_sat - 100.0) * 0.5)
+    if mean_hl_sat > 0.45:
+        hl_pen = min(60.0, (mean_hl_sat - 0.45) * 100.0)
         hl_chroma_score = max(20.0, 100.0 - hl_pen)
     else:
         hl_chroma_score = 100.0
         
     hard_gates_passed = (len(hard_gate_failures) == 0)
     raw_overall = (
-        0.25 * exp_score +
-        0.25 * mid_score +
+        0.20 * exp_score +
+        0.20 * mid_score +
         0.20 * clipping_health_score +
         0.20 * shadow_sat_score +
+        0.10 * midtone_chroma_score +
         0.10 * hl_chroma_score
     )
     if not hard_gates_passed:
@@ -797,7 +842,9 @@ def evaluate_scene_health(
         if clipping_health_score < 70.0:
             diag_parts.append(f"Shadow/highlight clipping elevated")
         if shadow_sat_score < 70.0:
-            diag_parts.append(f"Deep shadow saturation ({mean_shadow_sat:.1f}) exceeds scene ceiling")
+            diag_parts.append(f"Deep shadow saturation ({mean_shadow_sat:.2f}) exceeds scene ceiling ({effective_sh_ceil:.2f})")
+        if midtone_chroma_score < 70.0:
+            diag_parts.append(f"Midtone saturation ({mean_mid_sat:.2f}) exceeds ceiling ({effective_mid_ceil:.2f})")
     else:
         diag_parts.append("Scene image health verified within target parameters.")
 
@@ -974,6 +1021,29 @@ def compute_consistency_score(
             evaluation_mode=evaluation_mode,
             diagnosis=diagnosis_str,
             notes=f"Mode: same_scene_match | Delta E={round(delta_ab, 2)}, Tonal={round(tonal_score, 1)}, ClipHealth={round(clipping_health, 1)}"
+        )
+    elif evaluation_mode == "reference_baseline":
+        eff_src = source_metrics if source_metrics is not None else candidate
+        health_score = evaluate_scene_health(
+            source_metrics=eff_src,
+            graded_metrics=candidate,
+            graded_frames=graded_frames,
+            scene_intent=scene_intent
+        )
+        diag = "Master reference baseline standard."
+        if not health_score.hard_gates_passed:
+            diag += f" Health notice: {'; '.join(health_score.hard_gate_failures)}"
+        
+        overall = health_score.overall_score if health_score.hard_gates_passed else min(45.0, health_score.overall_score)
+        return ConsistencyScore(
+            overall_score=round(overall, 1),
+            tonal_similarity=100.0,
+            chromatic_similarity=100.0,
+            distribution_similarity=100.0,
+            clipping_health=round(health_score.clipping_health, 1),
+            evaluation_mode="reference_baseline",
+            diagnosis=diag,
+            notes="Mode: reference_baseline | Master technical reference standard."
         )
     else:
         # MODE B: Cross-Scene Look Continuity (Standardized Transform Probes + Image Health)

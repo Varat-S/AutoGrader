@@ -1,5 +1,6 @@
+import math
 from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class ShotProfileDecision(BaseModel):
     shot_index: int = Field(0, ge=0)
@@ -98,6 +99,16 @@ class SearchCitation(BaseModel):
     title: str
     url: str
     excerpt: str
+    extracted_principle: Optional[str] = None
+    influence: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        v_clean = str(v).strip()
+        if not (v_clean.startswith("http://") or v_clean.startswith("https://")):
+            raise ValueError(f"Citation URL must start with http:// or https://, got '{v}'")
+        return v_clean
 
 class CinematographyResearchResult(BaseModel):
     query: str
@@ -122,19 +133,70 @@ class GlobalLookIntent(BaseModel):
     black_mist_diffusion_strength: float = Field(0.0, ge=0.0, le=1.0, description="Black Mist diffusion emulation intensity")
 
 class SceneIntent(BaseModel):
+    model_config = {"extra": "allow"}
+
     scene_group_id: str = Field(..., description="Scene group identifier matching ShotSemanticAnalysis.scene_group_id")
-    lighting_class: str = Field("daylight", description="daylight, golden_hour, low_key_night, practical_night, interior_tungsten, overcast, high_key")
-    exposure_class: str = Field("balanced", description="balanced, low_key, high_key, underexposed, overexposed")
+    lighting_class: str = Field("daylight", description="daylight, golden_hour, low_key_night, practical_night, interior_tungsten, overcast, high_key, intentional_silhouette")
+    exposure_class: str = Field("balanced", description="balanced, low_key, high_key, underexposed, overexposed, low_key_underexposed, intentional_silhouette, overexposed_night")
     scene_mood: str = Field("natural", description="Artistic mood of this specific scene")
     source_relative_exposure_bounds: List[float] = Field(default_factory=lambda: [-1.0, 1.0], description="Allowed [min_ev, max_ev] delta relative to source")
     target_tonal_rules: List[str] = Field(default_factory=list, description="Target tonal rules e.g. preserve deep shadows, maintain readable face midtones")
-    shadow_saturation_ceiling: float = Field(0.85, ge=0.2, le=2.0, description="Maximum allowable saturation scaling in deep shadows")
-    midtone_saturation_ceiling: float = Field(1.30, ge=0.5, le=2.5, description="Maximum allowable saturation scaling in midtones")
+    
+    # Distinct separation: multiplier bounds vs measured health ceilings
+    scene_saturation_trim_bounds: List[float] = Field(default_factory=lambda: [0.70, 1.20], description="Allowed deterministic multiplier range [min_sat_trim, max_sat_trim]")
+    shadow_output_chroma_ceiling: float = Field(0.35, ge=0.05, le=1.0, description="Measured output-image shadow chroma ceiling in normalized HSV [0, 1] space")
+    midtone_output_chroma_ceiling: float = Field(0.70, ge=0.10, le=1.0, description="Measured output-image midtone chroma ceiling in normalized HSV [0, 1] space")
+
+    # Legacy field aliases maintained for backwards-compatibility
+    shadow_saturation_ceiling: float = Field(0.85, ge=0.05, le=2.0, description="Legacy alias for shadow saturation threshold")
+    midtone_saturation_ceiling: float = Field(1.30, ge=0.10, le=2.5, description="Legacy alias for midtone saturation threshold")
     contrast_trim_bounds: List[float] = Field(default_factory=lambda: [0.85, 1.15], description="Allowed [min_contrast_trim, max_contrast_trim]")
     saturation_trim_bounds: List[float] = Field(default_factory=lambda: [0.70, 1.20], description="Allowed [min_sat_trim, max_sat_trim]")
     protected_visual_anchors: List[str] = Field(default_factory=list, description="Visual anchors that must be protected from clipping or tint corruption")
     confidence: float = Field(0.90, ge=0.0, le=1.0, description="Confidence in scene classification")
     concise_rationale: str = Field("", description="Concise rationale for scene exposure and trim intent")
+
+    @field_validator("source_relative_exposure_bounds")
+    @classmethod
+    def validate_exp_bounds(cls, v: Any) -> List[float]:
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError(f"source_relative_exposure_bounds must be a 2-element list [min_ev, max_ev], got {v}")
+        min_ev, max_ev = float(v[0]), float(v[1])
+        if not (math.isfinite(min_ev) and math.isfinite(max_ev)):
+            raise ValueError("Exposure bounds must contain finite numbers (no NaN or Inf)")
+        if min_ev >= max_ev:
+            raise ValueError(f"Reversed or empty bounds: min_ev ({min_ev}) must be strictly less than max_ev ({max_ev})")
+        if min_ev < -2.5 or max_ev > 2.5:
+            raise ValueError(f"Exposure bounds [{min_ev}, {max_ev}] exceed safe application limits [-2.5, 2.5]")
+        return [round(min_ev, 3), round(max_ev, 3)]
+
+    @field_validator("contrast_trim_bounds")
+    @classmethod
+    def validate_contrast_bounds(cls, v: Any) -> List[float]:
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError(f"contrast_trim_bounds must be a 2-element list [min, max], got {v}")
+        min_c, max_c = float(v[0]), float(v[1])
+        if not (math.isfinite(min_c) and math.isfinite(max_c)):
+            raise ValueError("Contrast bounds must contain finite numbers (no NaN or Inf)")
+        if min_c >= max_c:
+            raise ValueError(f"Reversed or empty bounds: min ({min_c}) must be strictly less than max ({max_c})")
+        if min_c < 0.5 or max_c > 1.8:
+            raise ValueError(f"Contrast bounds [{min_c}, {max_c}] exceed safe application limits [0.5, 1.8]")
+        return [round(min_c, 3), round(max_c, 3)]
+
+    @field_validator("saturation_trim_bounds", "scene_saturation_trim_bounds")
+    @classmethod
+    def validate_sat_bounds(cls, v: Any) -> List[float]:
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError(f"saturation_trim_bounds must be a 2-element list [min, max], got {v}")
+        min_s, max_s = float(v[0]), float(v[1])
+        if not (math.isfinite(min_s) and math.isfinite(max_s)):
+            raise ValueError("Saturation bounds must contain finite numbers (no NaN or Inf)")
+        if min_s >= max_s:
+            raise ValueError(f"Reversed or empty bounds: min ({min_s}) must be strictly less than max ({max_s})")
+        if min_s < 0.4 or max_s > 2.0:
+            raise ValueError(f"Saturation bounds [{min_s}, {max_s}] exceed safe application limits [0.4, 2.0]")
+        return [round(min_s, 3), round(max_s, 3)]
 
     @property
     def rationale(self) -> str:
@@ -192,6 +254,40 @@ class CreativeSpecification(BaseModel):
     citations: List[SearchCitation] = Field(default_factory=list)
     global_look: Optional[GlobalLookIntent] = Field(default=None, description="Structured sequence-wide global look intent")
     scene_intents: List[SceneIntent] = Field(default_factory=list, description="Per-scene-group intent list")
+
+    def get_canonical_global_look(self) -> GlobalLookIntent:
+        if self.global_look is not None:
+            return self.global_look
+        look = GlobalLookIntent(
+            look_title=self.look_title,
+            base_contrast=self.contrast_intent,
+            base_saturation=self.saturation_intent,
+            shadow_bias=self.shadow_bias,
+            highlight_bias=self.highlight_bias,
+            highlight_rgb_offset=self.highlight_rgb_offset,
+            shadow_rgb_offset=self.shadow_rgb_offset,
+            black_level_character=self.black_level_treatment,
+            global_temperature_intent=self.temperature_shift,
+            global_tint_intent=self.tint_shift,
+            black_mist_diffusion_strength=self.black_mist_diffusion_strength
+        )
+        self.global_look = look
+        return look
+
+    def normalize_canonical_look(self) -> "CreativeSpecification":
+        canonical = self.get_canonical_global_look()
+        self.look_title = canonical.look_title
+        self.contrast_intent = canonical.base_contrast
+        self.saturation_intent = canonical.base_saturation
+        self.highlight_bias = canonical.highlight_bias
+        self.shadow_bias = canonical.shadow_bias
+        self.highlight_rgb_offset = canonical.highlight_rgb_offset
+        self.shadow_rgb_offset = canonical.shadow_rgb_offset
+        self.black_level_treatment = canonical.black_level_character
+        self.temperature_shift = canonical.global_temperature_intent
+        self.tint_shift = canonical.global_tint_intent
+        self.black_mist_diffusion_strength = canonical.black_mist_diffusion_strength
+        return self
 
     def get_scene_intent(self, scene_group_id: str) -> Optional[SceneIntent]:
         if isinstance(self.scene_intents, dict):

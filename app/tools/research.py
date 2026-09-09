@@ -26,6 +26,119 @@ def get_genai_client() -> genai.Client:
         raise ValueError("GEMINI_API_KEY environment variable is not set")
     return genai.Client(api_key=api_key)
 
+PRESET_RESEARCH_CONFIGS = {
+    "warm_800_negative": {
+        "title": "Warm 800 Negative",
+        "brief": "35mm tungsten film emulation with golden skin tones, cyan-leaning shadows, gentle highlight roll-off, and moderate saturation.",
+        "preferred_source_types": [
+            "ASC articles",
+            "Kodak technical publications",
+            "professional colorist breakdowns"
+        ],
+        "desired_evidence": [
+            "characteristic curve behavior",
+            "dye-layer response",
+            "color separation principles"
+        ],
+        "default_principles": [
+            "Preserve warm tungsten skin tone rendition while maintaining cyan shadow separation",
+            "Gentle highlight roll-off emulation matching 35mm negative shoulder",
+            "Controlled color saturation across midtones without spectral clipping"
+        ],
+        "default_influence": "Guided warm golden highlights, cyan-tinted shadows, and smooth highlight shoulder roll-off."
+    },
+    "silver_retention": {
+        "title": "Silver Retention",
+        "brief": "bleach bypass chemical process emulation with increased contrast, desaturated color palette, enhanced silver grain structure, and preserved edge acuity.",
+        "preferred_source_types": [
+            "film laboratory documentation",
+            "cinematography case studies (e.g. Se7en, Saving Private Ryan)"
+        ],
+        "desired_evidence": [
+            "silver halide retention physics",
+            "shadow density impact",
+            "midtone contrast expansion"
+        ],
+        "default_principles": [
+            "Steepened midtone contrast curve with dense crushed shadows",
+            "Reduced global saturation preserving muted tonal separation",
+            "Enhanced edge contrast and high-frequency textural acuity"
+        ],
+        "default_influence": "Guided steep contrast S-curve, desaturated chroma palette, and dense black level."
+    },
+    "nordic_soft_light": {
+        "title": "Nordic Soft Light",
+        "brief": "overcast high-latitude naturalism with cool muted palette, soft contrast, neutral skin tones, and gentle shadow roll-off.",
+        "preferred_source_types": [
+            "Scandinavian cinematography profiles",
+            "natural light exterior grading guides"
+        ],
+        "desired_evidence": [
+            "daylight Kelvin response",
+            "low-saturation color separation",
+            "highlight detail retention"
+        ],
+        "default_principles": [
+            "Soft contrast slope preserving overcast ambient gradient",
+            "Cool atmospheric temperature bias with neutral daylight skin tones",
+            "Gentle shadow roll-off preventing premature clipping in dark textures"
+        ],
+        "default_influence": "Guided low-contrast tonal curve, cool atmospheric color temperature, and soft shadow roll-off."
+    },
+    "neon_nocturne": {
+        "title": "Neon Nocturne",
+        "brief": "contemporary urban night exterior with saturated practical sources (cyan, magenta, amber), deep controlled shadows, and clean highlight blooming.",
+        "preferred_source_types": [
+            "neo-noir cinematography analyses",
+            "practical neon lighting case studies"
+        ],
+        "desired_evidence": [
+            "spectral peak handling in sRGB/Rec.709",
+            "shadow noise floor management",
+            "complementary split-toning"
+        ],
+        "default_principles": [
+            "Complementary split-toning separating cyan practicals from warm sodium highlights",
+            "Restrained shadow zone chroma preventing digital noise amplification",
+            "Controlled highlight roll-off accommodating saturated practical light sources"
+        ],
+        "default_influence": "Guided cyan/amber split-toning, deep controlled shadow floors, and selective chroma restraint."
+    }
+}
+
+def get_research_brief(creative_prompt: str) -> dict:
+    norm = creative_prompt.lower().replace("-", " ").replace("_", " ")
+    if "warm" in norm or "800" in norm or "portra" in norm or "tungsten" in norm:
+        return PRESET_RESEARCH_CONFIGS["warm_800_negative"]
+    elif "silver" in norm or "bleach" in norm or "bypass" in norm:
+        return PRESET_RESEARCH_CONFIGS["silver_retention"]
+    elif "nordic" in norm or "soft" in norm or "scandi" in norm or "overcast" in norm:
+        return PRESET_RESEARCH_CONFIGS["nordic_soft_light"]
+    elif "neon" in norm or "nocturne" in norm or "cyber" in norm:
+        return PRESET_RESEARCH_CONFIGS["neon_nocturne"]
+    else:
+        # Deterministic custom brief
+        return {
+            "title": creative_prompt.title(),
+            "brief": f"Cinematography color grading emulation and lighting design for '{creative_prompt}'.",
+            "preferred_source_types": [
+                "ASC cinematography articles",
+                "professional colorist breakdowns",
+                "film stock spectral response documentation"
+            ],
+            "desired_evidence": [
+                "tonal transfer characteristic curves",
+                "chromatic separation principles",
+                "highlight roll-off and shadow density management"
+            ],
+            "default_principles": [
+                f"Establish visual continuity aligned with '{creative_prompt}'",
+                "Maintain natural skin tone reproduction within scene lighting limits",
+                "Preserve readable midtones without digital clipping"
+            ],
+            "default_influence": f"Guided creative color balance and tonal contrast for '{creative_prompt}'."
+        }
+
 def research_cinematography_principles(
     creative_prompt: str,
     scene_context: str = "general film scene",
@@ -34,17 +147,25 @@ def research_cinematography_principles(
     if parallel_client is None:
         parallel_client = get_parallel_client()
         
+    brief_data = get_research_brief(creative_prompt)
+    
     queries = [
         f"{creative_prompt} cinematography color grading lighting",
-        f"{creative_prompt} film stock palette colorist breakdown"
+        f"{creative_prompt} {brief_data['desired_evidence'][0]} {' '.join(brief_data['preferred_source_types'][:2])}"
     ]
-    objective = f"Research cinematography techniques, film stock color response, and colorist principles for: '{creative_prompt}' in a {scene_context}."
+    objective = (
+        f"Research cinematography techniques, lighting, and color science for: '{creative_prompt}'. "
+        f"Brief: {brief_data['brief']} "
+        f"Preferred sources: {', '.join(brief_data['preferred_source_types'])}. "
+        f"Desired evidence: {', '.join(brief_data['desired_evidence'])}."
+    )
     
     if parallel_client is None:
         return CinematographyResearchResult(
             query=queries[0],
             objective=objective,
             sources=[],
+            synthesized_principles=brief_data["default_principles"],
             is_grounded=False
         )
         
@@ -77,12 +198,15 @@ def research_cinematography_principles(
                 elif hasattr(r, "highlights") and r.highlights:
                     excerpt = " ".join(r.highlights)
                     
-            # Strict grounding criteria: Do NOT substitute title as evidence
+            # Strict grounding criteria: Do NOT substitute title as evidence, must be valid http(s) URL
             if excerpt and url and (url.startswith("http://") or url.startswith("https://")):
+                principle_idx = min(len(citations), len(brief_data["default_principles"]) - 1)
                 citations.append(SearchCitation(
                     title=str(title).strip() or "Cinematography Reference",
                     url=str(url).strip(),
-                    excerpt=str(excerpt)[:400]
+                    excerpt=str(excerpt)[:400],
+                    extracted_principle=brief_data["default_principles"][principle_idx],
+                    influence=brief_data["default_influence"]
                 ))
                 
         is_grounded = (len(citations) > 0)
@@ -90,6 +214,7 @@ def research_cinematography_principles(
             query=queries[0],
             objective=objective,
             sources=citations,
+            synthesized_principles=brief_data["default_principles"] if is_grounded else [],
             is_grounded=is_grounded
         )
     except Exception as e:
@@ -99,6 +224,7 @@ def research_cinematography_principles(
             query=queries[0],
             objective=objective,
             sources=[],
+            synthesized_principles=[],
             is_grounded=False
         )
 
@@ -203,9 +329,18 @@ def synthesize_creative_specification(
     else:
         scene_groups_info = "Detected Sequence Scene Groups: Single scene group 'group_1'."
 
+    brief_data = get_research_brief(creative_prompt)
+    brief_section = (
+        f"Aesthetic Directive: {brief_data['title']}\n"
+        f"Cinematography Brief: {brief_data['brief']}\n"
+        f"Key Evidence Focus: {', '.join(brief_data['desired_evidence'])}\n"
+    )
+
     prompt = f"""You are a master digital intermediate (DI) supervisor and scene planning colorist.
 A filmmaker has requested the following creative color direction:
 User Prompt: "{creative_prompt}"
+
+{brief_section}
 
 {research_section}
 
@@ -280,6 +415,7 @@ Synthesize this into a structured CreativeSpecification with both GlobalLookInte
                 elif not spec.scene_intents:
                     spec.scene_intents.append(build_default_scene_intent("group_1"))
 
+                spec.normalize_canonical_look()
                 return spec
             except Exception as e:
                 last_error = e

@@ -1,4 +1,4 @@
-﻿import os
+import os
 from typing import Union, Optional
 import numpy as np
 from pathlib import Path
@@ -61,28 +61,40 @@ def generate_shared_creative_look_lut(
 ) -> str:
     from app.tools.calculate_grade import parse_highlight_bias_rgb, parse_shadow_bias_rgb, parse_black_level_lift
     
-    plan = GradePlan(shot_id="shared_creative_look", is_same_scene=False)
-    h_rgb = parse_highlight_bias_rgb(creative_spec.highlight_bias)
-    s_rgb = parse_shadow_bias_rgb(creative_spec.shadow_bias)
-    toe_lift = parse_black_level_lift(creative_spec.black_level_treatment, creative_spec.black_mist_diffusion_strength)
-    
-    plan.creative_look = CreativeLookParams(
-        look_title=creative_spec.look_title,
-        contrast=creative_spec.contrast_intent,
-        pivot=0.45,
-        saturation=creative_spec.saturation_intent,
-        shadow_rgb_offset=s_rgb,
-        highlight_rgb_offset=h_rgb,
-        black_toe_lift=toe_lift,
-        black_mist_strength=creative_spec.black_mist_diffusion_strength
+    canonical = creative_spec.get_canonical_global_look()
+
+    if canonical.highlight_rgb_offset is not None and len(canonical.highlight_rgb_offset) == 3:
+        h_rgb = [float(np.clip(x, -0.15, 0.15)) for x in canonical.highlight_rgb_offset]
+    else:
+        h_rgb = parse_highlight_bias_rgb(canonical.highlight_bias)
+
+    if canonical.shadow_rgb_offset is not None and len(canonical.shadow_rgb_offset) == 3:
+        s_rgb = [float(np.clip(x, -0.15, 0.15)) for x in canonical.shadow_rgb_offset]
+    else:
+        s_rgb = parse_shadow_bias_rgb(canonical.shadow_bias)
+
+    toe_lift = parse_black_level_lift(canonical.black_level_character, canonical.black_mist_diffusion_strength)
+
+    # Build GradePlan with neutral input, neutral technical balance, neutral match, neutral trim
+    plan = GradePlan(
+        shot_id="shared_creative_look",
+        is_same_scene=False,
+        creative_look=CreativeLookParams(
+            look_title=canonical.look_title,
+            contrast=round(canonical.base_contrast, 3),
+            pivot=0.45,
+            saturation=round(canonical.base_saturation, 3),
+            shadow_rgb_offset=s_rgb,
+            highlight_rgb_offset=h_rgb,
+            black_toe_lift=round(toe_lift, 2),
+            black_mist_strength=canonical.black_mist_diffusion_strength
+        )
     )
-    plan.technical_balance.temperature = creative_spec.temperature_shift
-    plan.technical_balance.tint = creative_spec.tint_shift
-    
+
     return generate_3d_cube_lut(
         plan_or_params=plan,
         output_path=output_path,
         size=size,
-        title=f"Shared_Look_{creative_spec.look_title.replace(' ', '_')}",
+        title=f"Shared_Look_{canonical.look_title.replace(' ', '_')}",
         is_log=False
     )

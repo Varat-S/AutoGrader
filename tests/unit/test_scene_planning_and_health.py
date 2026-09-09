@@ -329,3 +329,83 @@ def test_load_demo_sequence_loads_1080p_dji_clips(tmp_path):
     probe = probe_video(first_clip)
     assert probe["width"] == 1920
     assert probe["height"] == 1080
+
+def test_scene_intent_model_bound_validation():
+    # Valid bounds
+    si = SceneIntent(
+        scene_group_id="g1",
+        source_relative_exposure_bounds=[-1.0, 1.0],
+        contrast_trim_bounds=[0.8, 1.3],
+        saturation_trim_bounds=[0.6, 1.5]
+    )
+    assert si.source_relative_exposure_bounds == [-1.0, 1.0]
+
+    # Rejection of empty, single-element, inverted, extreme, NaN, Inf
+    invalid_cases = [
+        [],
+        [0.0],
+        [1.0, -1.0],
+        [-99.0, 99.0],
+        [float("nan"), 1.0],
+        [-1.0, float("inf")]
+    ]
+
+    for inv in invalid_cases:
+        with pytest.raises(ValueError):
+            SceneIntent(scene_group_id="g1", source_relative_exposure_bounds=inv)
+
+    for inv in [[], [1.0], [1.5, 0.8], [0.1, 3.0], [float("nan"), 1.2]]:
+        with pytest.raises(ValueError):
+            SceneIntent(scene_group_id="g1", contrast_trim_bounds=inv)
+
+    for inv in [[], [1.0], [1.5, 0.8], [0.1, 5.0], [0.5, float("inf")]]:
+        with pytest.raises(ValueError):
+            SceneIntent(scene_group_id="g1", saturation_trim_bounds=inv)
+
+def test_saturation_ceilings_vs_trim_bounds_separation():
+    si = SceneIntent(
+        scene_group_id="g1",
+        scene_saturation_trim_bounds=[0.75, 1.15],
+        shadow_output_chroma_ceiling=0.35,
+        midtone_output_chroma_ceiling=0.70
+    )
+    # Multipliers are bounded around 1.0
+    assert 0.4 <= si.scene_saturation_trim_bounds[0] < si.scene_saturation_trim_bounds[1] <= 2.0
+    # Measured chroma ceilings are in [0, 1] normalized HSV
+    assert 0.05 <= si.shadow_output_chroma_ceiling <= 1.0
+    assert 0.10 <= si.midtone_output_chroma_ceiling <= 1.0
+
+def test_intentional_silhouette_does_not_trigger_midtone_crush():
+    # Create dark silhouette test frame: dark subject against bright background
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    frame[:30, :] = [220, 220, 220] # bright sky
+    frame[30:, :] = [15, 15, 15]    # silhouette subject (p50 will be very dark ~15)
+
+    from app.media.color import aggregate_shot_metrics
+    graded_metrics = aggregate_shot_metrics(
+        shot_id="shot_sil",
+        video_path="",
+        frames=[frame],
+        timestamps=[0.0],
+        fps=24.0,
+        width=100,
+        height=100,
+        duration_sec=1.0
+    )
+
+    intent = SceneIntent(
+        scene_group_id="sil_group",
+        lighting_class="intentional_silhouette",
+        exposure_class="intentional_silhouette"
+    )
+
+    health = evaluate_scene_health(
+        source_metrics=graded_metrics,
+        graded_metrics=graded_metrics,
+        graded_frames=[frame],
+        scene_intent=intent
+    )
+
+    assert "midtone_crush" not in health.hard_gate_failures
+    assert health.midtone_readability == 100.0
+
