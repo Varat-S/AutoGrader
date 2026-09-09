@@ -33,56 +33,59 @@ flowchart TD
     subgraph Browser ["User Web Interface (FastAPI + HTML5)"]
         Upload["Upload 2–4 Video Takes (MP4, MOV, MKV, WebM)"]
         Prompt["Creative Direction Prompt"]
-        UI_Progress["Live Real-Time Activity Feed & State Machine"]
+        ProfSelect["Per-Shot Profile Dropdowns & Advisory Safety Net"]
+        UI_Progress["Live Real-Time Activity Feed & Multi-Agent State Machine"]
         UI_Result["Synchronized Split-Slider Preview & Dual .cube LUT Export"]
     end
 
     subgraph Perception ["1. Multimodal Perception (Gemini)"]
-        GeminiVision["Gemini Multimodal Vision\n• Explicit Per-Shot Scene Grouping (scene_group_id)\n• Relationship Tagging (reference, same_scene, independent_scene)\n• Time of Day & Lighting Context"]
+        GeminiVision["Gemini Multimodal Vision\n• Explicit Per-Shot Scene Grouping (scene_group_id)\n• Relationship Tagging (reference, same_scene, independent_scene)\n• Context Analysis (sky/high-key vs shadow/low-key)"]
     end
 
     subgraph Research ["2. Web Intelligence (Parallel Search SDK)"]
-        ParallelSearch["Parallel Search API\n• Real WebSearchResult.excerpts Parsing\n• Verified Cinematography Sources\n• Honest Ungrounded Fallback"]
-        GeminiSynth["Gemini Creative Synthesis\n• Bounded Contrast & Saturation\n• Highlight/Shadow Split-Toning Offsets\n• Black-Mist-Inspired Tonal Response"]
+        ParallelSearch["Parallel Search API\n• Real WebSearchResult.excerpts Parsing\n• Grounded Cinematography Citations\n• Honest Ungrounded Fallback"]
+        GeminiSynth["Gemini Creative Synthesis\n• Sequence CreativeSpecification\n• Per-Scene Intent Modeling & Tonal Bounds\n• Shared Creative Look (Highlight/Shadow Split Tints)"]
     end
 
-    subgraph StagedGrading ["3. Staged Colorist Pipeline (GradePlan)"]
-        InNorm["1. Input Transform (Authoritative Sony S-Log3, Apple Log / Rec.2020, Generic Log, Rec.709)"]
-        NormGate{"Normalization Health Gate\n(NORMALIZATION_VERIFIED / PROFILE_CONFIRMATION_REQUIRED / NORMALIZATION_FAILED)"}
-        TechBal["2. Per-Shot Technical Balance (Exposure EV & Primary WB)"]
-        SceneMatch["3. Same-Scene CIELAB Match (Balanced Intermediates)"]
-        LookNode["4. Shared Creative Look (Highlight/Shadow Split Tints & Filmic Contrast)"]
-        SceneTrim["5. Scene Trim (Preserves Night Scene Depth & Ambience)"]
-        OutNode["6. Output Transform (Shoulder Roll-off & Clipping Guard)"]
+    subgraph Profiles ["3. Input Transforms & Preflight Safety"]
+        InNorm["Authoritative Camera Input Transforms\n(Sony S-Log3, Apple Log / Rec.2020, DJI D-Log, DJI D-Log M, Rec.709)"]
+        NormGate{"Preflight Normalization Gate\n(NORMALIZATION_VERIFIED / Non-Blocking Safety Warnings)"}
     end
 
-    subgraph RevisionStateMachine ["4. Autonomous Evaluation & Revision State Machine"]
+    subgraph SceneAgents ["4. Dedicated Per-Scene Colorist Agents (SceneColoristAgent)"]
+        MasterGrade["Grade Master Reference Shot\n(Establish Graded CIELAB Target Metrics)"]
+        
+        subgraph SceneDecision {"Shot Relationship?"}
+            SameScene["Same-Scene Shot (is_same_scene=True)\n• Bounded CIELAB Luminance Matching (L* gain & offset)\n• Full Tonal + Chromatic Evaluation (match_colors_only=False)"]
+            IndepScene["Independent Scene (is_same_scene=False)\n• Natural Exposure Preserved (L* gain=1.0, offset=0.0)\n• Match Colors & Look Only (match_colors_only=True)"]
+        end
+
+        TonalControls["Context-Aware 3-Way Tonal Controls (ThreeWayTonalParams)\n• Toe Lift (Shadows) | Midtone Gamma | Highlight Roll-off (Skies)\n• Kept Neutral by Default; Populated Only for Genuine Zonal Trims"]
+    end
+
+    subgraph RevisionStateMachine ["5. Autonomous Diagnostic Revision State Machine"]
         FastPreview["Fast Sampled-Frame Preview Render"]
-        EvalChoice{"Evaluation Mode?"}
-        EvalChoice -- "same_scene" --> EvalSame["Same-Scene Quantile Matching against Graded Reference"]
-        EvalChoice -- "independent_scene" --> EvalCross["Standardized Synthetic Probe Transform Evaluation"]
         
         StateInit["INITIAL_EVALUATION"]
-        EvalSame --> StateInit
-        EvalCross --> StateInit
+        FastPreview --> StateInit
         
-        StateInit --> CheckAccept{"Score >= 75.0?"}
+        StateInit --> CheckAccept{"Score >= 75.0 & Health Gates Passed?"}
         CheckAccept -- "Yes" --> TermAccept["ACCEPTED"]
-        CheckAccept -- "No (Rev <= 2)" --> ProposeRev["REVISION_PROPOSED\n(Diagnose Failing Component & Clamp Mutation)"]
+        CheckAccept -- "No (Rev <= 2)" --> ProposeRev["REVISION_PROPOSED\n(Diagnose Failing Component:\n• Same-Scene: ev_adj & IQR contrast\n• Independent: shadow saturation, clipping, midtone gamma)"]
         
         ProposeRev --> CheckNoOp{"Parameter Changed?"}
         CheckNoOp -- "No" --> TermNoOp["NO_ACTIONABLE_REVISION"]
         CheckNoOp -- "Yes" --> EvalProposal["Evaluate Proposed Plan"]
         
-        EvalProposal --> CheckImproved{"Score > Best Score?"}
+        EvalProposal --> CheckImproved{"Health-Aware Ranking:\nScore > Best Score?"}
         CheckImproved -- "Yes" --> StateImp["REVISION_IMPROVED\n(Update Best Plan)"]
         CheckImproved -- "No" --> StateRej["REVISION_REJECTED\n(Revert Proposal)"]
         
         StateImp --> LoopCheck{"Score >= 75 or Rev == 2?"}
         StateRej --> LoopCheck
         
-        LoopCheck -- "Score >= 75" --> TermAccept
-        LoopCheck -- "Rev == 2 & Score < 75" --> TermMax["MAX_REVISIONS_REACHED\n(Render Verified Best Plan)"]
+        LoopCheck -- "Score >= 75 & Health OK" --> TermAccept
+        LoopCheck -- "Rev == 2" --> TermMax["MAX_REVISIONS_REACHED\n(Render Verified Best Plan)"]
         
         TermAccept --> FinalRender["Render Delivery Video (.mp4) & Master 3D LUT (.cube)"]
         TermMax --> FinalRender
@@ -91,13 +94,17 @@ flowchart TD
 
     Upload --> GeminiVision
     Prompt --> ParallelSearch
+    ProfSelect --> InNorm
     ParallelSearch --> GeminiSynth
     
-    GeminiVision --> InNorm
-    GeminiSynth --> LookNode
+    GeminiVision --> Profiles
+    InNorm --> NormGate --> MasterGrade
+    GeminiSynth --> MasterGrade
     
-    InNorm --> NormGate --> TechBal --> SceneMatch --> LookNode --> SceneTrim --> OutNode
-    OutNode --> FastPreview --> EvalChoice
+    MasterGrade --> SceneDecision
+    SameScene --> TonalControls
+    IndepScene --> TonalControls
+    TonalControls --> FastPreview
     FinalRender --> UI_Result
 ```
 
@@ -105,24 +112,34 @@ flowchart TD
 
 ## ⚡ Key Differentiators & Autonomous Colorist Loop
 
-1. **Authoritative Camera Input Transforms**:
+1. **Dedicated Per-Scene Colorist Agents**:
+   - Deploys a dedicated `SceneColoristAgent` for each distinct scene group.
+   - Context-aware intelligence accepts intentional artistic choices: high-key scenes allow filmic highlight roll-off and sky clipping, while low-key scenes allow deep crushed shadow floors without triggering false health rejections.
+2. **Same-Scene Bounded Luminance vs Independent Scene Color-Only Look Continuity**:
+   - **Same-Scene Shots (`is_same_scene=True`)**: Deterministic bounded luminance matching ($L^*_\text{gain} \in [0.5, 2.0]$, $L^*_\text{offset} \in [-60.0, 60.0]$), full tonal + chromatic evaluation, and targeted diagnostic exposure revisions (`ev_adj`).
+   - **Independent Scenes (`is_same_scene=False`)**: Preserves natural scene exposure ($L^*_\text{gain}=1.0$, $L^*_\text{offset}=0.0$), evaluating cross-scene look continuity without forcing daytime brightness onto night scenes or dark interiors.
+3. **Context-Aware 3-Way Zonal Controls (`three_way`)**:
+   - Explicit colorist controls for Shadows (Toe Lift, Saturation, Tint Offset), Midtones (Gamma, Contrast, Saturation, Tint Offset), and Highlights (Gain, Roll-off, Saturation, Tint Offset).
+   - **Zero Double-Application**: Defaulted to neutral (`ThreeWayTonalParams()`) so scene trims and creative looks are never compounded twice; UI accurately surfaces composed totals and zonal adjustments.
+4. **Authoritative Camera Input Transforms**:
    - **Sony S-Log3 / S-Gamut3.Cine**: Authoritative Sony Technical Summary inverse EOTF and chromatic adaptation matrix `MAT_SGAMUT3CINE_TO_BT709`.
    - **Apple Log / Rec.2020 (`apple_log_rec2020`)**: Truthfully reflects Apple's iPhone 15/16 Pro specification with ITU-R BT.2020 color gamut mapping via `MAT_BT2020_TO_BT709`.
-   - **DJI D-Log / D-Gamut (`dji_dlog_dgamut`)**: Authoritative DJI White Paper transfer curve inverse EOTF and D-Gamut primary matrix `MAT_DGAMUT_TO_BT709` for DJI Ronin 4D, Inspire 3, Mavic 3 Pro, and Osmo systems.
-   - **Generic Log**: Bounded experimental logarithmic transfer curve for unprofiled log footage.
-   - **Rec.709**: Passthrough for display-referred broadcast video.
-2. **Conservative Log Detector & Truthful `auto_ask` Semantics**:
+   - **DJI D-Log / D-Gamut (`dji_dlog_dgamut`)**: Authoritative DJI White Paper transfer curve inverse EOTF and D-Gamut primary matrix `MAT_DGAMUT_TO_BT709`.
+   - **DJI D-Log M (`dji_dlog_m`)**: Authoritative DJI D-Log M transfer curve and gamut mapping for Osmo and consumer drone systems.
+   - **Generic Log & Rec.709**: Bounded experimental curve for unprofiled log and display-referred passthrough.
+5. **Conservative Log Detector & Advisory Safety Net**:
    - Metadata (`ffprobe` transfer and primaries) is inspected first.
-   - If metadata is inconclusive, a conservative histogram detector evaluates the conjunction of $p5 > 38.0$, chroma $< 12.0$, IQR $< 55.0$, and $p95 < 240.0$. It is **advisory only** and never guesses camera hardware from pixel statistics alone.
-   - `auto_ask` is strictly a pending assessment state. Unresolved `auto_ask` profiles return HTTP 409 Conflict at the API boundary and raise `ValueError` in agent execution; they never reach `GradePlan`, rendering, or exported LUTs.
-3. **Blocking Normalization Validation Gate**:
-   - Every normalized reference and candidate is validated against plausible display bounds before grading proceeds.
-   - `NORMALIZATION_FAILED` (excessive clipping $>8\%$) and `PROFILE_CONFIRMATION_REQUIRED` halt agent execution immediately unless the user explicitly provides an override confirmation.
-4. **Authentic Parallel Web Intelligence**: Real `WebSearchResult.excerpts` evidence is extracted and passed into the creative synthesis prompt. If Parallel is unavailable, the system reports an honest ungrounded state with zero fabricated citations.
-5. **Explicit Mixed Sequence Grouping**: Multi-shot sequences (e.g. Day Take 1, Day Take 2, Night Scene) are explicitly tagged with `scene_group_id` and `relationship_to_reference` (`reference`, `same_scene`, `independent_scene`).
-6. **Content-Independent Cross-Scene Look Continuity**: Cross-scene look continuity is measured by applying grade plans to standardized synthetic probes (testing highlight warmth, shadow coolness, contrast curve slope, and saturation scaling) plus candidate image health, **without penalizing darker night scene baselines**.
-7. **Honest Autonomous Revision State Machine**: Implements explicit states (`INITIAL_EVALUATION`, `ACCEPTED`, `REVISION_PROPOSED`, `REVISION_IMPROVED`, `REVISION_REJECTED`, `NO_ACTIONABLE_REVISION`, `MAX_REVISIONS_REACHED`), best-plan retention, bounded parameter clamping, and truthful event logging.
-8. **Dual 3D LUT Exports & Pure Float32 Precision**: Exports both a timeline-wide **Shared Creative-Look 3D LUT** (`shared_creative_look.cube`) and per-shot **Master Grade LUTs** (`shot_X_grade.cube`) computed in 32-bit floating-point precision for **DaVinci Resolve** and **Adobe Premiere Pro**.
+   - If metadata is inconclusive, a conservative histogram detector evaluates the conjunction of $p5 > 38.0$, chroma $< 12.0$, IQR $< 55.0$, and $p95 < 240.0$. Advisory only; never guesses camera hardware from pixel statistics alone.
+   - Unresolved `auto_ask` profiles return HTTP 409 Conflict at the API boundary, guaranteeing unresolved profiles never reach rendering.
+6. **Preflight Normalization Gate with Delivery Guarantee**:
+   - Validates display tone distributions before paid LLM calls. Non-blocking delivery guarantee logs warnings without halting pipeline execution.
+7. **Authentic Parallel Web Intelligence**: Real `WebSearchResult.excerpts` evidence is extracted and passed into the creative synthesis prompt. If Parallel is unavailable, the system reports an honest ungrounded state with zero fabricated citations.
+8. **Health-Aware Autonomous Revision Ranking**:
+   - Evaluates hard gates, clipping health, shadow saturation health, and look continuity.
+   - Reverts ineffective revisions (`REVISION_REJECTED`) and renders verified best plans.
+9. **Dual 3D LUT Exports & Genuine 1080p Demo Footage**:
+   - Exports timeline-wide **Shared Creative-Look 3D LUT** (`shared_creative_look.cube`) and per-shot **Master Grade LUTs** (`shot_X_grade.cube`) in 32-bit floating-point precision.
+   - Ships with genuine 1080p DJI aerial and ground footage for instant 1-click sequence demonstration.
 
 ---
 
