@@ -641,10 +641,11 @@ class AutonomousColoristAgent:
 
             # Compute effective grade summary and final scores
             active_intent = ref_scene_intent if is_ref else shot_scene_intent
+            scene_rat = (getattr(active_intent, "concise_rationale", None) or getattr(active_intent, "rationale", "")) if active_intent else ""
             eff_summary = best_plan.compute_effective_summary(
                 scene_group_id=semantic.scene_group_id,
                 scene_class=active_intent.lighting_class if active_intent else "daylight",
-                scene_rationale=active_intent.rationale if active_intent else "",
+                scene_rationale=scene_rat,
                 camera_profile=shot_profile,
                 revision_state=final_state
             )

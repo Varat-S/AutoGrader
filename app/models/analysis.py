@@ -136,6 +136,10 @@ class SceneIntent(BaseModel):
     confidence: float = Field(0.90, ge=0.0, le=1.0, description="Confidence in scene classification")
     concise_rationale: str = Field("", description="Concise rationale for scene exposure and trim intent")
 
+    @property
+    def rationale(self) -> str:
+        return self.concise_rationale
+
 class LookContinuityScore(BaseModel):
     overall_score: float = Field(..., ge=0.0, le=100.0, description="Overall look continuity score (0-100)")
     contrast_slope_adherence: float = Field(100.0, ge=0.0, le=100.0)
