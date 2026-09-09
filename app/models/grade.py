@@ -80,6 +80,24 @@ class SceneTrimParams(BaseModel):
     trim_shadow_sat: float = Field(1.0, ge=0.2, le=1.5, description="Selective shadow zone saturation multiplier")
     trim_shadow_lift: float = Field(0.0, ge=-20.0, le=20.0, description="Scene-specific shadow toe trim")
 
+class ThreeWayTonalParams(BaseModel):
+    # Shadows
+    shadow_lift: float = Field(0.0, ge=-0.5, le=0.5, description="Shadow zone lift / toe offset")
+    shadow_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0], description="Shadow zone RGB tint [B, G, R]")
+    shadow_saturation: float = Field(1.0, ge=0.0, le=2.5, description="Shadow zone saturation multiplier")
+    
+    # Midtones
+    midtone_gamma: float = Field(1.0, ge=0.5, le=2.0, description="Midtone zone gamma / exposure multiplier (1.0 = linear)")
+    midtone_contrast: float = Field(1.0, ge=0.5, le=2.0, description="Midtone zone contrast multiplier")
+    midtone_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0], description="Midtone zone RGB tint [B, G, R]")
+    midtone_saturation: float = Field(1.0, ge=0.0, le=2.5, description="Midtone zone saturation multiplier")
+    
+    # Highlights
+    highlight_gain: float = Field(1.0, ge=0.5, le=2.0, description="Highlight zone gain / ceiling multiplier")
+    highlight_rolloff: float = Field(0.85, ge=0.6, le=1.0, description="Highlight shoulder roll-off threshold")
+    highlight_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0], description="Highlight zone RGB tint [B, G, R]")
+    highlight_saturation: float = Field(1.0, ge=0.0, le=2.5, description="Highlight zone saturation multiplier")
+
 class OutputTransformParams(BaseModel):
     highlight_shoulder_threshold: float = Field(0.85, ge=0.7, le=0.95, description="Luminance threshold where compressive shoulder starts")
     highlight_compression_factor: float = Field(2.0, ge=1.0, le=4.0, description="Soft roll-off compression curve slope")
@@ -154,14 +172,20 @@ class GradePlan(BaseModel):
     scene_match: SceneMatchParams = Field(default_factory=SceneMatchParams)
     creative_look: CreativeLookParams = Field(default_factory=CreativeLookParams)
     scene_trim: SceneTrimParams = Field(default_factory=SceneTrimParams)
+    three_way: ThreeWayTonalParams = Field(default_factory=ThreeWayTonalParams, description="Per-scene 3-way colorist controls (shadows, midtones, highlights)")
     output_transform: OutputTransformParams = Field(default_factory=OutputTransformParams)
 
     def to_legacy_params(self) -> "ColorGradeParams":
         # Combines staged parameters into unified ColorGradeParams for backwards compatibility
         total_exposure = self.technical_balance.exposure_ev + self.scene_trim.trim_exposure_ev
-        total_contrast = self.creative_look.contrast * self.scene_trim.trim_contrast
+        total_contrast = self.creative_look.contrast * self.scene_trim.trim_contrast * getattr(self.three_way, "midtone_contrast", 1.0)
         total_saturation = self.creative_look.saturation * self.scene_trim.trim_saturation
         
+        tw = self.three_way if hasattr(self, "three_way") and self.three_way is not None else ThreeWayTonalParams()
+        sh_offset = [self.creative_look.shadow_rgb_offset[c] + tw.shadow_rgb_offset[c] for c in range(3)]
+        mid_offset = list(tw.midtone_rgb_offset)
+        hl_offset = [self.creative_look.highlight_rgb_offset[c] + tw.highlight_rgb_offset[c] for c in range(3)]
+
         return ColorGradeParams(
             exposure_ev=round(total_exposure, 3),
             contrast=round(total_contrast, 3),
@@ -175,8 +199,16 @@ class GradePlan(BaseModel):
             lab_a_offset=self.scene_match.lab_a_offset,
             lab_b_gain=self.scene_match.lab_b_gain,
             lab_b_offset=self.scene_match.lab_b_offset,
-            shadow_rgb_offset=self.creative_look.shadow_rgb_offset,
-            highlight_rgb_offset=self.creative_look.highlight_rgb_offset
+            shadow_rgb_offset=sh_offset,
+            midtone_rgb_offset=mid_offset,
+            highlight_rgb_offset=hl_offset,
+            shadow_lift=tw.shadow_lift,
+            midtone_gamma=tw.midtone_gamma,
+            highlight_gain=tw.highlight_gain,
+            shadow_saturation=tw.shadow_saturation,
+            midtone_saturation=tw.midtone_saturation,
+            highlight_saturation=tw.highlight_saturation,
+            highlight_rolloff=tw.highlight_rolloff
         )
 
     def compute_effective_summary(
@@ -276,6 +308,14 @@ class ColorGradeParams(BaseModel):
     shadow_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     midtone_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     highlight_rgb_offset: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    
+    shadow_lift: float = Field(0.0, ge=-0.5, le=0.5)
+    midtone_gamma: float = Field(1.0, ge=0.5, le=2.0)
+    highlight_gain: float = Field(1.0, ge=0.5, le=2.0)
+    shadow_saturation: float = Field(1.0, ge=0.0, le=2.5)
+    midtone_saturation: float = Field(1.0, ge=0.0, le=2.5)
+    highlight_saturation: float = Field(1.0, ge=0.0, le=2.5)
+    highlight_rolloff: float = Field(0.85, ge=0.6, le=1.0)
 
 class ConsistencyScore(BaseModel):
     overall_score: float = Field(..., ge=0.0, le=100.0, description="Overall consistency score (0-100)")
@@ -284,6 +324,8 @@ class ConsistencyScore(BaseModel):
     distribution_similarity: float = Field(..., ge=0.0, le=100.0, description="Tonal/chromatic spread or saturation scaling adherence")
     clipping_health: float = Field(..., ge=0.0, le=100.0, description="Penalty for shadow crush (<2) or highlight blow-out (>253)")
     evaluation_mode: str = Field("same_scene_match", description="same_scene_match or cross_scene_look_continuity")
+    artistic_sky_clipping_accepted: bool = Field(False, description="True if highlight blowout is accepted as artistic sky/sunlight")
+    artistic_shadow_clipping_accepted: bool = Field(False, description="True if shadow crush is accepted as artistic low-key/contrast")
     diagnosis: Optional[str] = Field(None, description="Diagnostic feedback for autonomous revision")
     notes: Optional[str] = None
 

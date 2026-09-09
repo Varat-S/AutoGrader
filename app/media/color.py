@@ -539,7 +539,8 @@ def apply_input_camera_profile(
 def calculate_deterministic_match_params(
     reference: ShotMetrics,
     target: ShotMetrics,
-    strength: float = 1.0
+    strength: float = 1.0,
+    match_luminance: bool = True
 ) -> ColorGradeParams:
     ref_l_mean, ref_a_mean, ref_b_mean = reference.avg_lab_mean
     ref_l_std, ref_a_std, ref_b_std = reference.avg_lab_std
@@ -547,10 +548,15 @@ def calculate_deterministic_match_params(
     tgt_l_mean, tgt_a_mean, tgt_b_mean = target.avg_lab_mean
     tgt_l_std, tgt_a_std, tgt_b_std = target.avg_lab_std
     
-    if ref_l_std < 1.0 or tgt_l_std < 1.0:
-        l_gain = 1.0
+    if match_luminance:
+        if ref_l_std < 1.0 or tgt_l_std < 1.0:
+            l_gain = 1.0
+        else:
+            l_gain = float(np.clip(ref_l_std / tgt_l_std, 0.7, 1.5))
+        raw_l_offset = float(ref_l_mean - l_gain * tgt_l_mean)
     else:
-        l_gain = float(np.clip(ref_l_std / tgt_l_std, 0.7, 1.5))
+        l_gain = 1.0
+        raw_l_offset = 0.0
         
     if ref_a_std < 1.0 or tgt_a_std < 1.0:
         a_gain = 1.0
@@ -562,39 +568,39 @@ def calculate_deterministic_match_params(
     else:
         b_gain = float(np.clip(ref_b_std / tgt_b_std, 0.6, 1.6))
         
-    raw_l_offset = float(ref_l_mean - l_gain * tgt_l_mean)
     a_offset = float(ref_a_mean - a_gain * tgt_a_mean)
     b_offset = float(ref_b_mean - b_gain * tgt_b_mean)
 
-    # Composition-Aware Luminance Protection:
-    # Check if endpoints (p5 and p95) are already aligned while mean differs due to framing/area proportions
-    ref_p5 = reference.p5_luminance / 2.55 if reference.p5_luminance > 0 else (reference.sampled_frames[0].p5_luminance / 2.55 if reference.sampled_frames else 0.0)
-    ref_p95 = reference.p95_luminance / 2.55 if reference.p95_luminance > 0 else (reference.sampled_frames[0].p95_luminance / 2.55 if reference.sampled_frames else 100.0)
-    tgt_p5 = target.p5_luminance / 2.55 if target.p5_luminance > 0 else (target.sampled_frames[0].p5_luminance / 2.55 if target.sampled_frames else 0.0)
-    tgt_p95 = target.p95_luminance / 2.55 if target.p95_luminance > 0 else (target.sampled_frames[0].p95_luminance / 2.55 if target.sampled_frames else 100.0)
+    if match_luminance:
+        # Composition-Aware Luminance Protection:
+        ref_p5 = reference.p5_luminance / 2.55 if reference.p5_luminance > 0 else (reference.sampled_frames[0].p5_luminance / 2.55 if reference.sampled_frames else 0.0)
+        ref_p95 = reference.p95_luminance / 2.55 if reference.p95_luminance > 0 else (reference.sampled_frames[0].p95_luminance / 2.55 if reference.sampled_frames else 100.0)
+        tgt_p5 = target.p5_luminance / 2.55 if target.p5_luminance > 0 else (target.sampled_frames[0].p5_luminance / 2.55 if target.sampled_frames else 0.0)
+        tgt_p95 = target.p95_luminance / 2.55 if target.p95_luminance > 0 else (target.sampled_frames[0].p95_luminance / 2.55 if target.sampled_frames else 100.0)
 
-    p5_delta = ref_p5 - tgt_p5
-    p95_delta = ref_p95 - tgt_p95
-    endpoint_delta = 0.5 * (p5_delta + p95_delta)
+        p5_delta = ref_p5 - tgt_p5
+        p95_delta = ref_p95 - tgt_p95
+        endpoint_delta = 0.5 * (p5_delta + p95_delta)
 
-    comp_disparity = abs(raw_l_offset - endpoint_delta)
-    if comp_disparity > 10.0 and abs(p5_delta) < 15.0 and abs(p95_delta) < 15.0:
-        # Tonal extremes are already lit similarly; area proportions dominate the mean.
-        # Anchor predominantly on endpoint delta to avoid false composition exposure lift
-        dampen = max(0.08, 1.0 - (comp_disparity - 10.0) / 15.0)
-        l_offset = endpoint_delta + (raw_l_offset - endpoint_delta) * dampen
+        comp_disparity = abs(raw_l_offset - endpoint_delta)
+        if comp_disparity > 10.0 and abs(p5_delta) < 15.0 and abs(p95_delta) < 15.0:
+            dampen = max(0.08, 1.0 - (comp_disparity - 10.0) / 15.0)
+            l_offset = endpoint_delta + (raw_l_offset - endpoint_delta) * dampen
+        else:
+            l_offset = raw_l_offset
+
+        # Headroom-aware clipping guard: do not push highlights into blown-out clipping
+        max_safe_lift = max(0.0, 94.0 - tgt_p95)
+        max_safe_drop = max(0.0, tgt_p5 - 2.0)
+        l_offset = float(np.clip(l_offset, -max_safe_drop, max_safe_lift))
+        l_gain = 1.0 + (l_gain - 1.0) * strength
+        l_offset = float(np.clip(l_offset * strength, -80.0, 80.0))
     else:
-        l_offset = raw_l_offset
-
-    # Headroom-aware clipping guard: do not push highlights into blown-out clipping
-    max_safe_lift = max(0.0, 94.0 - tgt_p95)
-    max_safe_drop = max(0.0, tgt_p5 - 2.0)
-    l_offset = float(np.clip(l_offset, -max_safe_drop, max_safe_lift))
-    
-    l_gain = 1.0 + (l_gain - 1.0) * strength
+        l_gain = 1.0
+        l_offset = 0.0
+        
     a_gain = 1.0 + (a_gain - 1.0) * strength
     b_gain = 1.0 + (b_gain - 1.0) * strength
-    l_offset = float(np.clip(l_offset * strength, -80.0, 80.0))
     a_offset = float(np.clip(a_offset * strength, -80.0, 80.0))
     b_offset = float(np.clip(b_offset * strength, -80.0, 80.0))
     
@@ -653,6 +659,21 @@ def apply_color_grade_to_frame(
         highlight_bias = plan.creative_look.highlight_rgb_offset
         black_toe_lift = plan.creative_look.black_toe_lift + plan.scene_trim.trim_shadow_lift
         
+        tw = getattr(plan, "three_way", None)
+        shadow_lift = getattr(tw, "shadow_lift", 0.0) if tw else 0.0
+        shadow_tint = getattr(tw, "shadow_rgb_offset", [0.0, 0.0, 0.0]) if tw else [0.0, 0.0, 0.0]
+        shadow_sat = getattr(tw, "shadow_saturation", 1.0) if tw else 1.0
+        
+        midtone_gamma = getattr(tw, "midtone_gamma", 1.0) if tw else 1.0
+        midtone_contrast = getattr(tw, "midtone_contrast", 1.0) if tw else 1.0
+        midtone_tint = getattr(tw, "midtone_rgb_offset", [0.0, 0.0, 0.0]) if tw else [0.0, 0.0, 0.0]
+        midtone_sat = getattr(tw, "midtone_saturation", 1.0) if tw else 1.0
+        
+        highlight_gain = getattr(tw, "highlight_gain", 1.0) if tw else 1.0
+        highlight_rolloff = getattr(tw, "highlight_rolloff", 0.85) if tw else 0.85
+        highlight_tint = getattr(tw, "highlight_rgb_offset", [0.0, 0.0, 0.0]) if tw else [0.0, 0.0, 0.0]
+        highlight_sat = getattr(tw, "highlight_saturation", 1.0) if tw else 1.0
+
         shoulder_thresh = plan.output_transform.highlight_shoulder_threshold
         compression_factor = plan.output_transform.highlight_compression_factor
     else:
@@ -679,6 +700,20 @@ def apply_color_grade_to_frame(
         black_toe_lift = 0.0
         shadow_sat_trim = 1.0
         
+        shadow_lift = getattr(params, "shadow_lift", 0.0)
+        shadow_tint = getattr(params, "shadow_rgb_offset", [0.0, 0.0, 0.0])
+        shadow_sat = getattr(params, "shadow_saturation", 1.0)
+        
+        midtone_gamma = getattr(params, "midtone_gamma", 1.0)
+        midtone_contrast = 1.0
+        midtone_tint = getattr(params, "midtone_rgb_offset", [0.0, 0.0, 0.0])
+        midtone_sat = getattr(params, "midtone_saturation", 1.0)
+        
+        highlight_gain = getattr(params, "highlight_gain", 1.0)
+        highlight_rolloff = getattr(params, "highlight_rolloff", 0.85)
+        highlight_tint = getattr(params, "highlight_rgb_offset", [0.0, 0.0, 0.0])
+        highlight_sat = getattr(params, "highlight_saturation", 1.0)
+
         shoulder_thresh = 0.85
         compression_factor = 2.0
 
@@ -726,32 +761,57 @@ def apply_color_grade_to_frame(
         
         img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
-    # STAGE 4: Shared Creative Look (Filmic Contrast, Highlight/Shadow Tints, Saturation)
-    # A. Filmic S-Curve Contrast
-    if abs(contrast - 1.0) > 0.005:
+    # STAGE 4: Shared Creative Look & 3-Way Zonal Colorist Controls
+    # Smooth zonal luminance weights
+    lum = 0.2126 * img[:, :, 2] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 0]
+    w_shadow = np.clip((0.50 - lum) / 0.50, 0.0, 1.0) ** 1.2
+    w_highlight = np.clip((lum - 0.50) / 0.50, 0.0, 1.0) ** 1.2
+    w_midtone = np.clip(1.0 - w_shadow - w_highlight, 0.0, 1.0)
+
+    # A. 3-Way Tonal Manipulation: Shadows (Lift), Midtones (Gamma), Highlights (Gain)
+    if abs(shadow_lift) > 0.001:
+        img = img + shadow_lift * np.expand_dims(w_shadow, axis=-1)
+
+    if abs(midtone_gamma - 1.0) > 0.005:
+        g = float(np.clip(midtone_gamma, 0.5, 2.0))
+        img_gamma = np.power(np.maximum(0.0, img), 1.0 / g)
+        img = img + (img_gamma - img) * np.expand_dims(w_midtone, axis=-1)
+
+    if abs(highlight_gain - 1.0) > 0.005:
+        g_hl = float(np.clip(highlight_gain, 0.5, 2.0))
+        img = img + (img * g_hl - img) * np.expand_dims(w_highlight, axis=-1)
+
+    # B. Filmic S-Curve Contrast (Global & Midtone)
+    eff_contrast = contrast * (midtone_contrast if abs(midtone_contrast - 1.0) > 0.005 else 1.0)
+    if abs(eff_contrast - 1.0) > 0.005:
         p = float(np.clip(pivot, 0.05, 0.95))
-        c = float(contrast)
+        c = float(eff_contrast)
         x_norm = np.clip(img, 0.0, 1.0)
         below = p * (np.maximum(0.0, x_norm / p) ** c)
         above = 1.0 - (1.0 - p) * (np.maximum(0.0, (1.0 - x_norm) / (1.0 - p)) ** c)
         img = np.where(x_norm < p, below, above)
 
-    # B. Luminance-Weighted Highlight and Shadow Biases (Split Toning in Float Space)
-    lum = 0.2126 * img[:, :, 2] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 0]
-    w_highlight = np.clip((lum - 0.55) / 0.40, 0.0, 1.0) ** 1.5
-    w_shadow = np.clip((0.45 - lum) / 0.40, 0.0, 1.0) ** 1.5
+    # C. 3-Way Split Toning (Shadows, Midtones, Highlights)
+    comb_sh_tint = [shadow_bias[c] + shadow_tint[c] for c in range(3)] if shadow_bias else shadow_tint
+    comb_hl_tint = [highlight_bias[c] + highlight_tint[c] for c in range(3)] if highlight_bias else highlight_tint
+    comb_mid_tint = midtone_tint
     
-    if highlight_bias and any(abs(x) > 0.001 for x in highlight_bias):
-        img[:, :, 0] += highlight_bias[0] * w_highlight
-        img[:, :, 1] += highlight_bias[1] * w_highlight
-        img[:, :, 2] += highlight_bias[2] * w_highlight
+    if any(abs(x) > 0.001 for x in comb_hl_tint):
+        img[:, :, 0] += comb_hl_tint[0] * w_highlight
+        img[:, :, 1] += comb_hl_tint[1] * w_highlight
+        img[:, :, 2] += comb_hl_tint[2] * w_highlight
         
-    if shadow_bias and any(abs(x) > 0.001 for x in shadow_bias):
-        img[:, :, 0] += shadow_bias[0] * w_shadow
-        img[:, :, 1] += shadow_bias[1] * w_shadow
-        img[:, :, 2] += shadow_bias[2] * w_shadow
+    if any(abs(x) > 0.001 for x in comb_sh_tint):
+        img[:, :, 0] += comb_sh_tint[0] * w_shadow
+        img[:, :, 1] += comb_sh_tint[1] * w_shadow
+        img[:, :, 2] += comb_sh_tint[2] * w_shadow
+
+    if any(abs(x) > 0.001 for x in comb_mid_tint):
+        img[:, :, 0] += comb_mid_tint[0] * w_midtone
+        img[:, :, 1] += comb_mid_tint[1] * w_midtone
+        img[:, :, 2] += comb_mid_tint[2] * w_midtone
         
-    # C. Black-Mist-Inspired Tonal Response (Shadow Toe Lift)
+    # D. Black-Mist-Inspired Tonal Response (Shadow Toe Lift)
     if abs(black_toe_lift) > 0.01:
         toe_f = black_toe_lift / 255.0
         toe_weight = np.clip((0.40 - lum) / 0.40, 0.0, 1.0) ** 2.0
@@ -759,29 +819,30 @@ def apply_color_grade_to_frame(
 
     img = np.clip(img, 0.0, 1.0)
 
-    # D. Saturation in Pure Float32 HSV space with Luminance-Zone Awareness & Clipping Guard
-    if abs(saturation - 1.0) > 0.005 or abs(shadow_sat_trim - 1.0) > 0.005:
+    # E. Saturation with 3-Way Zonal Controls in Pure Float32 HSV space
+    has_3way_sat = (abs(shadow_sat - 1.0) > 0.005 or abs(midtone_sat - 1.0) > 0.005 or abs(highlight_sat - 1.0) > 0.005)
+    if abs(saturation - 1.0) > 0.005 or abs(shadow_sat_trim - 1.0) > 0.005 or has_3way_sat:
         hsv = cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2HSV)
         sat_channel = hsv[:, :, 1]
         
-        # Pixel luminance for zone-specific saturation control
         pix_lum = 0.2126 * img[:, :, 2] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 0]
         
-        # Deep shadow saturation dampening (pix_lum < 0.25): prevent noise blowout and oversaturated darks
         if saturation > 1.0:
             shadow_dampen = np.clip(pix_lum / 0.25, 0.65, 1.0)
             eff_sat = 1.0 + (saturation - 1.0) * shadow_dampen
         else:
             eff_sat = saturation
             
-        # Selective shadow-region saturation damping
         if abs(shadow_sat_trim - 1.0) > 0.005:
             shadow_zone_weight = np.clip((0.30 - pix_lum) / 0.30, 0.0, 1.0)
             eff_sat = eff_sat * (1.0 - shadow_zone_weight * (1.0 - shadow_sat_trim))
 
+        if has_3way_sat:
+            zonal_sat = shadow_sat * w_shadow + midtone_sat * w_midtone + highlight_sat * w_highlight
+            eff_sat = eff_sat * zonal_sat
+
         sat_channel = sat_channel * eff_sat
         
-        # RGB channel clipping guard: dampen saturation boost as any channel approaches clipping (>0.94)
         max_ch = np.maximum(np.maximum(img[:, :, 0], img[:, :, 1]), img[:, :, 2])
         clip_guard = np.where(max_ch > 0.94, np.clip((1.0 - max_ch) / 0.06, 0.4, 1.0), 1.0)
         sat_channel = np.clip(sat_channel * clip_guard, 0.0, 1.0)
@@ -790,9 +851,10 @@ def apply_color_grade_to_frame(
         img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
     # STAGE 6: Output Transform (Highlight Shoulder Compression & Clipping Guard)
+    effective_shoulder = min(shoulder_thresh, highlight_rolloff)
     img = np.where(
-        img > shoulder_thresh,
-        shoulder_thresh + (img - shoulder_thresh) / (1.0 + (img - shoulder_thresh) * compression_factor),
+        img > effective_shoulder,
+        effective_shoulder + (img - effective_shoulder) / (1.0 + (img - effective_shoulder) * compression_factor),
         img
     )
     img = np.clip(img, 0.0, 1.0)
@@ -980,14 +1042,26 @@ def evaluate_scene_health(
     if not is_silhouette and grd_iqr < 18.0 and src_iqr > 35.0:
         mid_score = min(mid_score, max(20.0, 100.0 - (18.0 - grd_iqr) * 4.0))
         
-    # Hard Gate 3: Midtone crush (source had midtones > 25, graded fell below 10)
-    if not is_silhouette and src_p50 > 25.0 and grd_p50 < 10.0:
-        hard_gate_failures.append(f"Midtone crush: midtones collapsed below readable floor (source p50={src_p50:.1f}, graded p50={grd_p50:.1f})")
-
-    # 3. Clipping Health (Advisory - clipping gates removed per user request)
+    # 3. Clipping Statistics & Context-Aware Acceptance
     sh_clip = graded_metrics.avg_shadow_clip_pct if graded_metrics.avg_shadow_clip_pct > 0 else 0.0
     hl_clip = graded_metrics.avg_highlight_clip_pct if graded_metrics.avg_highlight_clip_pct > 0 else 0.0
     clipping_health_score = 100.0
+
+    # Context-aware artistic acceptance of blown skies or clipped shadows
+    lighting_env = getattr(scene_intent, "lighting_class", "daylight").lower() if scene_intent else "daylight"
+    scene_mood = getattr(scene_intent, "scene_mood", "").lower() if scene_intent else ""
+    scene_rules = " ".join(getattr(scene_intent, "target_tonal_rules", [])).lower() if scene_intent else ""
+    scene_desc = getattr(scene_intent, "concise_rationale", "").lower() if scene_intent else ""
+    
+    is_sky_or_high_key = any(k in lighting_env or k in scene_mood or k in scene_rules or k in scene_desc for k in ["sky", "daylight", "sun", "aerial", "outdoor", "high_key", "bright"])
+    artistic_sky_accepted = is_sky_or_high_key or (hl_clip > 0.0)
+    
+    is_shadow_or_low_key = any(k in lighting_env or k in scene_mood or k in scene_rules or k in scene_desc for k in ["night", "low_key", "dark", "silhouette", "moody", "interior", "deep_shadow", "contrast"])
+    artistic_shadow_accepted = is_shadow_or_low_key or is_silhouette or (sh_clip > 0.0)
+
+    # Hard Gate 3: Midtone crush (source had midtones > 25, graded fell below 10)
+    if not is_silhouette and not is_shadow_or_low_key and src_p50 > 25.0 and grd_p50 < 10.0:
+        hard_gate_failures.append(f"Midtone crush: midtones collapsed below readable floor (source p50={src_p50:.1f}, graded p50={grd_p50:.1f})")
         
     # 4. Shadow and Midtone Saturation Health (Normalized HSV [0.0, 1.0] Space)
     mean_shadow_sat = 0.0
@@ -1108,6 +1182,8 @@ def evaluate_scene_health(
         hard_gates_passed=hard_gates_passed,
         hard_gate_failures=hard_gate_failures,
         passed=passed,
+        artistic_sky_clipping_accepted=artistic_sky_accepted,
+        artistic_shadow_clipping_accepted=artistic_shadow_accepted,
         diagnosis="; ".join(diag_parts)
     )
 
@@ -1319,7 +1395,8 @@ def compute_consistency_score(
     cand_plan: Optional[GradePlan] = None,
     scene_intent: Optional[SceneIntent] = None,
     graded_frames: Optional[List[np.ndarray]] = None,
-    source_metrics: Optional[ShotMetrics] = None
+    source_metrics: Optional[ShotMetrics] = None,
+    match_colors_only: bool = False
 ) -> ConsistencyScore:
     ref_p5 = reference.p5_luminance if reference.p5_luminance > 0 else (reference.sampled_frames[0].p5_luminance if reference.sampled_frames else 0.0)
     ref_p25 = reference.p25_luminance if reference.p25_luminance > 0 else (reference.sampled_frames[0].p25_luminance if reference.sampled_frames else 0.0)
@@ -1333,8 +1410,18 @@ def compute_consistency_score(
     cand_p75 = candidate.p75_luminance if candidate.p75_luminance > 0 else (candidate.sampled_frames[0].p75_luminance if candidate.sampled_frames else 0.0)
     cand_p95 = candidate.p95_luminance if candidate.p95_luminance > 0 else (candidate.sampled_frames[0].p95_luminance if candidate.sampled_frames else 255.0)
 
+    health_score = None
+    if source_metrics is not None or graded_frames is not None:
+        eff_src = source_metrics if source_metrics is not None else candidate
+        health_score = evaluate_scene_health(
+            source_metrics=eff_src,
+            graded_metrics=candidate,
+            graded_frames=graded_frames,
+            scene_intent=scene_intent
+        )
+
     if evaluation_mode == "same_scene_match":
-        # MODE A: Same Scene Technical Match
+        # MODE A: Same Scene Technical Match / Color Match
         # 1. Chromatic Similarity (CIELAB a*, b* centroid distance + chroma consistency)
         l1, a1, b1 = reference.avg_lab_mean
         l2, a2, b2 = candidate.avg_lab_mean
@@ -1342,48 +1429,45 @@ def compute_consistency_score(
         delta_chroma = abs(reference.avg_chroma - candidate.avg_chroma)
         chroma_score = float(100.0 * np.exp(-(delta_ab + 0.4 * delta_chroma) / 14.0))
         
-        # 2. Quantile-based tonal distance
-        tonal_err = (
-            0.25 * abs(cand_p50 - ref_p50) +
-            0.20 * abs(cand_p25 - ref_p25) +
-            0.20 * abs(cand_p75 - ref_p75) +
-            0.15 * abs(cand_p5 - ref_p5) +
-            0.15 * abs(cand_p95 - ref_p95) +
-            0.05 * abs(candidate.avg_lab_std[0] - reference.avg_lab_std[0])
-        )
-        tonal_score = float(100.0 * np.exp(-tonal_err / 20.0))
+        # 2. Tonal Distance (decoupled when matching colors only)
+        if match_colors_only:
+            tonal_score = 100.0
+        else:
+            tonal_err = (
+                0.25 * abs(cand_p50 - ref_p50) +
+                0.20 * abs(cand_p25 - ref_p25) +
+                0.20 * abs(cand_p75 - ref_p75) +
+                0.15 * abs(cand_p5 - ref_p5) +
+                0.15 * abs(cand_p95 - ref_p95) +
+                0.05 * abs(candidate.avg_lab_std[0] - reference.avg_lab_std[0])
+            )
+            tonal_score = float(100.0 * np.exp(-tonal_err / 20.0))
         
         # 3. Distribution spread distance (interquartile range + L* std)
         cand_iqr = abs(cand_p75 - cand_p25)
         ref_iqr = abs(ref_p75 - ref_p25)
         spread_err = abs(cand_iqr - ref_iqr) + abs(candidate.avg_lab_std[0] - reference.avg_lab_std[0])
-        dist_score = float(100.0 * np.exp(-spread_err / 18.0))
+        dist_score = float(100.0 * np.exp(-spread_err / 18.0)) if not match_colors_only else 100.0
         
         # 4. Clipping Health (Advisory only — clipping penalties removed)
-        shadow_clip = candidate.avg_shadow_clip_pct if candidate.avg_shadow_clip_pct > 0 else (candidate.sampled_frames[0].shadow_clip_pct if candidate.sampled_frames else 0.0)
-        highlight_clip = candidate.avg_highlight_clip_pct if candidate.avg_highlight_clip_pct > 0 else (candidate.sampled_frames[0].highlight_clip_pct if candidate.sampled_frames else 0.0)
         clipping_health = 100.0
         
-        base_overall = 0.35 * tonal_score + 0.35 * chroma_score + 0.15 * dist_score + 0.15 * clipping_health
-        tonal_gate = min(1.0, 0.25 + 0.75 * (tonal_score / 60.0)) if tonal_score < 60.0 else 1.0
-        overall = base_overall * tonal_gate
+        if match_colors_only:
+            base_overall = 0.70 * chroma_score + 0.15 * tonal_score + 0.15 * clipping_health
+            overall = base_overall
+        else:
+            base_overall = 0.35 * tonal_score + 0.35 * chroma_score + 0.15 * dist_score + 0.15 * clipping_health
+            tonal_gate = min(1.0, 0.25 + 0.75 * (tonal_score / 60.0)) if tonal_score < 60.0 else 1.0
+            overall = base_overall * tonal_gate
         
         diagnosis_parts = []
-        if tonal_score < 70.0:
+        if not match_colors_only and tonal_score < 70.0:
             direction = "darker" if cand_p50 < ref_p50 else "brighter"
             diagnosis_parts.append(f"Tonal mismatch: candidate is {direction} than reference (tonal score: {round(tonal_score, 1)})")
         if chroma_score < 70.0:
             diagnosis_parts.append(f"Chromatic cast mismatch (Delta E_ab: {round(delta_ab, 2)})")
 
-        # Check objective scene health if source metrics or frames provided
-        if source_metrics is not None or graded_frames is not None:
-            eff_src = source_metrics if source_metrics is not None else candidate
-            health_score = evaluate_scene_health(
-                source_metrics=eff_src,
-                graded_metrics=candidate,
-                graded_frames=graded_frames,
-                scene_intent=scene_intent
-            )
+        if health_score is not None:
             if not health_score.hard_gates_passed:
                 overall = float(min(overall, 45.0))
                 diagnosis_parts.extend(health_score.hard_gate_failures)
@@ -1398,6 +1482,8 @@ def compute_consistency_score(
             distribution_similarity=round(dist_score, 1),
             clipping_health=round(clipping_health, 1),
             evaluation_mode=evaluation_mode,
+            artistic_sky_clipping_accepted=health_score.artistic_sky_clipping_accepted if health_score else False,
+            artistic_shadow_clipping_accepted=health_score.artistic_shadow_clipping_accepted if health_score else False,
             diagnosis=diagnosis_str,
             notes=f"Mode: same_scene_match | Delta E={round(delta_ab, 2)}, Tonal={round(tonal_score, 1)}, ClipHealth={round(clipping_health, 1)}"
         )
@@ -1421,6 +1507,8 @@ def compute_consistency_score(
             distribution_similarity=100.0,
             clipping_health=round(health_score.clipping_health, 1),
             evaluation_mode="reference_baseline",
+            artistic_sky_clipping_accepted=health_score.artistic_sky_clipping_accepted if health_score else False,
+            artistic_shadow_clipping_accepted=health_score.artistic_shadow_clipping_accepted if health_score else False,
             diagnosis=diag,
             notes="Mode: reference_baseline | Master technical reference standard."
         )
@@ -1486,6 +1574,8 @@ def compute_consistency_score(
             distribution_similarity=round(look_score.saturation_scaling_adherence, 1),
             clipping_health=round(health_score.clipping_health, 1),
             evaluation_mode=evaluation_mode,
+            artistic_sky_clipping_accepted=health_score.artistic_sky_clipping_accepted if health_score else False,
+            artistic_shadow_clipping_accepted=health_score.artistic_shadow_clipping_accepted if health_score else False,
             diagnosis=diagnosis_str,
             notes=f"Mode: cross_scene_look_continuity | LookHarmony={round(look_score.probe_chromatic_harmony, 1)}, ToneContinuity={round(look_score.probe_tonal_continuity, 1)}, Health={round(health_score.overall_score, 1)}"
         )

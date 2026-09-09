@@ -264,6 +264,8 @@ class SceneHealthScore(BaseModel):
     hard_gates_passed: bool = Field(True, description="False if any critical health gate failed")
     hard_gate_failures: List[str] = Field(default_factory=list, description="Descriptions of any failed hard gates")
     passed: bool = Field(True, description="True if passed both overall score and hard gates")
+    artistic_sky_clipping_accepted: bool = Field(False, description="True if highlight blowout is accepted as artistic sky/sunlight")
+    artistic_shadow_clipping_accepted: bool = Field(False, description="True if shadow crush is accepted as artistic low-key/contrast")
     diagnosis: Optional[str] = None
 
 class CreativeSpecification(BaseModel):
